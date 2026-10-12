@@ -4,6 +4,7 @@
 //! migration build on `hataori-runtime-foundation` without exposing backend types.
 
 mod action;
+mod atomic;
 mod dedup;
 mod domain;
 mod error;
