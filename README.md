@@ -7,14 +7,14 @@ Hataori is a Rust engine for simple serial, Rayon, MPI, and hybrid data-parallel
 The online documentation — execution-model guide, runnable tutorials for the
 serial, Rayon, MPI, hybrid, and runtime-loaded-MPI modes, and the API
 reference — is published from `docs/` at
-<https://shinaoka.github.io/hataori-rs/>. Build it locally with
+<https://tensor4all.org/hataori-rs/>. Build it locally with
 `scripts/build_docs_site.sh` (requires [Quarto](https://quarto.org)); the
 tutorials quote the Mandelbrot examples under `examples/`, which run with
 `scripts/check-tutorial-examples.sh`.
 
 Coding agents and readers who want one machine-oriented entry point should
 start from the [llms.txt index](docs/llms.txt) (published at
-<https://shinaoka.github.io/hataori-rs/llms.txt>): it states the calling
+<https://tensor4all.org/hataori-rs/llms.txt>): it states the calling
 conventions every model shares and lists every guide, tutorial, API page, and
 design document with a one-line description, so each is one fetch away.
 
@@ -192,5 +192,5 @@ on [tensor4all-rs#663](https://github.com/tensor4all/tensor4all-rs/issues/663).
 - [Object placement and locality-aware task API](docs/design/object-placement-api.md)
 - [Implementation readiness and validation matrix](docs/implementation-readiness.md)
 - [Review gate log](docs/review-log.md)
-- [P0 implementation tracker](https://github.com/shinaoka/hataori-rs/issues/1)
-- [Long-term distributed-runtime tracker](https://github.com/shinaoka/hataori-rs/issues/14)
+- [P0 implementation tracker](https://github.com/tensor4all/hataori-rs/issues/1)
+- [Long-term distributed-runtime tracker](https://github.com/tensor4all/hataori-rs/issues/14)

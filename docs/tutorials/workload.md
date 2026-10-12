@@ -2,7 +2,7 @@
 
 All tutorials share one computation so that only the execution model
 changes from page to page. It lives in
-[`examples/support/mandelbrot_common.rs`](https://github.com/shinaoka/hataori-rs/blob/main/examples/support/mandelbrot_common.rs)
+[`examples/support/mandelbrot_common.rs`](https://github.com/tensor4all/hataori-rs/blob/main/examples/support/mandelbrot_common.rs)
 and every example includes it with `#[path]`.
 
 ## Parameters

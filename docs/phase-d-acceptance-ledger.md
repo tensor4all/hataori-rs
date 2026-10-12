@@ -1,6 +1,6 @@
 # Phase D acceptance ledger
 
-**Tracking:** [Issue #14](https://github.com/shinaoka/hataori-rs/issues/14)
+**Tracking:** [Issue #14](https://github.com/tensor4all/hataori-rs/issues/14)
 
 **Contract:** [`design/phase-d-migration.md`](design/phase-d-migration.md)
 

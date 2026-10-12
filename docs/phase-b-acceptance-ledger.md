@@ -1,6 +1,6 @@
 # Phase B acceptance ledger
 
-**Tracking:** [hataori-rs#14](https://github.com/shinaoka/hataori-rs/issues/14)
+**Tracking:** [hataori-rs#14](https://github.com/tensor4all/hataori-rs/issues/14)
 
 **Classification:** PASS for Phase B only. Phase C-E remains unimplemented.
 
