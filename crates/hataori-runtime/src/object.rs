@@ -1,3 +1,4 @@
+use crate::atomic::AtomicTryUpdate;
 use crate::{
     action::{Action, ActionRegistry, ActionValue, RegisteredAction, Segments},
     domain::{ActionJob, ObjectJob},
@@ -1257,7 +1258,7 @@ impl ObjectService {
                 return Err(RuntimeError::MigrationInProgress(object));
             }
             self.placement_count
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                .try_update_compat(Ordering::AcqRel, Ordering::Acquire, |count| {
                     (count < self.limits.max_placement_tickets as u64).then_some(count + 1)
                 })
                 .map_err(|_| RuntimeError::ResourceExhausted {
@@ -1589,7 +1590,7 @@ impl ObjectService {
         if envelope.rooted
             && self
                 .root_count
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                .try_update_compat(Ordering::AcqRel, Ordering::Acquire, |count| {
                     (count < self.limits.max_roots as u64).then_some(count + 1)
                 })
                 .is_err()
@@ -1700,7 +1701,7 @@ impl ObjectService {
             }
             if self
                 .transfer_count
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                .try_update_compat(Ordering::AcqRel, Ordering::Acquire, |count| {
                     (count < self.limits.max_transfers as u64).then_some(count + 1)
                 })
                 .is_err()

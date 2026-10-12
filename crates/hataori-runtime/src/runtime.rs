@@ -1,3 +1,4 @@
+use crate::atomic::AtomicTryUpdate;
 use crate::{
     action::{Action, ActionRegistry, ActionValue, Segments},
     dedup::{DedupDisposition, DedupTable},
@@ -499,7 +500,7 @@ impl Shared {
     fn next_request(&self) -> Result<RequestId, RuntimeError> {
         let sequence = self
             .next_request
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            .try_update_compat(Ordering::AcqRel, Ordering::Acquire, |value| {
                 value.checked_add(1).filter(|next| *next != 0)
             })
             .map_err(|_| RuntimeError::ResourceExhausted {
@@ -513,7 +514,7 @@ impl Shared {
     fn next_object(&self) -> Result<ObjectId, RuntimeError> {
         let sequence = self
             .next_object
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            .try_update_compat(Ordering::AcqRel, Ordering::Acquire, |value| {
                 value.checked_add(1).filter(|next| *next != 0)
             })
             .map_err(|_| RuntimeError::ResourceExhausted {
@@ -528,7 +529,7 @@ impl Shared {
     fn next_message(&self) -> Result<MessageId, RuntimeError> {
         let value = self
             .next_message
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            .try_update_compat(Ordering::AcqRel, Ordering::Acquire, |value| {
                 value.checked_add(1).filter(|next| *next != 0)
             })
             .map_err(|_| RuntimeError::Protocol("message id overflow".into()))?;

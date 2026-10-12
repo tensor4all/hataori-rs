@@ -1,3 +1,4 @@
+use crate::atomic::AtomicTryUpdate;
 use crate::{
     action::{ActionValue, RegisteredAction},
     error::{ActionError, ResourceKind, RuntimeError},
@@ -194,7 +195,7 @@ impl DomainRegistry {
         domain
             .counters
             .queued
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+            .try_update_compat(Ordering::AcqRel, Ordering::Acquire, |queued| {
                 (queued < domain.queue_capacity).then_some(queued + 1)
             })
             .map_err(|_| RuntimeError::ResourceExhausted {
