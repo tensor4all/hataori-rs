@@ -735,7 +735,7 @@ impl ObjectService {
             return Err(ActionError::user("migration snapshot schema mismatch"));
         }
         self.prepared_count
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update_compat(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < self.limits.max_prepared_migrations as u64).then_some(count + 1)
             })
             .map_err(|_| ActionError::user("prepared migration limit reached"))?;

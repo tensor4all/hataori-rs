@@ -122,7 +122,7 @@ MPI afterwards (the example renders the image first and runs this failing
 call second on the same communicator). Panics inside a callback abort the
 whole MPI job instead.
 
-Source: [`examples/mpi_mandelbrot_pmap.rs`](https://github.com/shinaoka/hataori-rs/blob/main/examples/mpi_mandelbrot_pmap.rs)
+Source: [`examples/mpi_mandelbrot_pmap.rs`](https://github.com/tensor4all/hataori-rs/blob/main/examples/mpi_mandelbrot_pmap.rs)
 
 ## Build and run
 
@@ -140,7 +140,7 @@ domain with a pool.
 
 ## Compare with hand-written MPI
 
-[`examples/mpi_mandelbrot_raw.rs`](https://github.com/shinaoka/hataori-rs/blob/main/examples/mpi_mandelbrot_raw.rs)
+[`examples/mpi_mandelbrot_raw.rs`](https://github.com/tensor4all/hataori-rs/blob/main/examples/mpi_mandelbrot_raw.rs)
 renders the same image with a static round-robin split and explicit
 tagged sends and receives. Run both at the default 4096 × 4096 size:
 

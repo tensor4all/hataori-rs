@@ -15,52 +15,52 @@
 
 ## Getting started
 
-- [README](https://github.com/shinaoka/hataori-rs/blob/main/README.md): The repository router — features, MPI prerequisites, smoke examples, the docs developer guide, and links to every design document.
-- [Documentation home](https://shinaoka.github.io/hataori-rs/): Execution-model table, the "where to start" workflow map, and a thirty-second serial example.
-- [Getting Started](https://shinaoka.github.io/hataori-rs/getting-started/): Cargo dependency lines per feature set, per-feature prerequisites, choosing an execution model, and running the tutorial code.
-- [Parallel Execution Models](https://shinaoka.github.io/hataori-rs/guides/parallel-models.html): The four models (serial `map`, Rayon `map_in`, MPI `pmap`, hybrid `pmap`), the `LocalMode` semantics, a model-selection table, and the current P0/P1 limits.
-- [Choosing Features and Backends](https://shinaoka.github.io/hataori-rs/guides/features-and-backends.html): Feature matrix, link-time `mpi` versus runtime-loaded `rsmpi-rt`, and the optional `tenferro` feature.
+- [README](https://github.com/tensor4all/hataori-rs/blob/main/README.md): The repository router — features, MPI prerequisites, smoke examples, the docs developer guide, and links to every design document.
+- [Documentation home](https://tensor4all.org/hataori-rs/): Execution-model table, the "where to start" workflow map, and a thirty-second serial example.
+- [Getting Started](https://tensor4all.org/hataori-rs/getting-started/): Cargo dependency lines per feature set, per-feature prerequisites, choosing an execution model, and running the tutorial code.
+- [Parallel Execution Models](https://tensor4all.org/hataori-rs/guides/parallel-models.html): The four models (serial `map`, Rayon `map_in`, MPI `pmap`, hybrid `pmap`), the `LocalMode` semantics, a model-selection table, and the current P0/P1 limits.
+- [Choosing Features and Backends](https://tensor4all.org/hataori-rs/guides/features-and-backends.html): Feature matrix, link-time `mpi` versus runtime-loaded `rsmpi-rt`, and the optional `tenferro` feature.
 
 ## Tutorials
 
-- [Tutorials index](https://shinaoka.github.io/hataori-rs/tutorials/): One Mandelbrot workload rendered by every execution model; each page quotes a runnable example under `examples/` that CI compiles and runs.
-- [0. The workload](https://shinaoka.github.io/hataori-rs/tutorials/workload.html): The shared `mandelbrot_common.rs` parameters and per-column kernel every tutorial reuses.
-- [1. Serial map](https://shinaoka.github.io/hataori-rs/tutorials/serial-map.html): `hataori::map` as the semantic baseline: borrowed closures, no `Send`/`'static`/serde requirements.
-- [2. Rayon map_in](https://shinaoka.github.io/hataori-rs/tutorials/rayon-map-in.html): Building a `Domain`, verifiable CPU placement, and the three `LocalMode`s on one machine.
-- [3. MPI pmap](https://shinaoka.github.io/hataori-rs/tutorials/mpi-pmap.html): The collective call shape, `PmapOptions`, root-only input/output, and dynamic batch scheduling across ranks.
-- [4. MPI placement collectives](https://shinaoka.github.io/hataori-rs/tutorials/mpi-placement.html): `broadcast`, `scatter`, and `gather` for owned serde values alongside `pmap`.
-- [5. Hybrid MPI + Rayon pmap](https://shinaoka.github.io/hataori-rs/tutorials/hybrid-pmap.html): A Rayon pool on every rank, `LocalMode` inside batches, and the opt-in bounded prefetch.
-- [6. Runtime-loaded MPI (rsmpi-rt)](https://shinaoka.github.io/hataori-rs/tutorials/rsmpi-rt.html): Tutorials 3–5 without linking MPI: building MPIwrapper, setting `MPI_RT_LIB`, and sharing the runtime with MPI.jl or mpi4py.
+- [Tutorials index](https://tensor4all.org/hataori-rs/tutorials/): One Mandelbrot workload rendered by every execution model; each page quotes a runnable example under `examples/` that CI compiles and runs.
+- [0. The workload](https://tensor4all.org/hataori-rs/tutorials/workload.html): The shared `mandelbrot_common.rs` parameters and per-column kernel every tutorial reuses.
+- [1. Serial map](https://tensor4all.org/hataori-rs/tutorials/serial-map.html): `hataori::map` as the semantic baseline: borrowed closures, no `Send`/`'static`/serde requirements.
+- [2. Rayon map_in](https://tensor4all.org/hataori-rs/tutorials/rayon-map-in.html): Building a `Domain`, verifiable CPU placement, and the three `LocalMode`s on one machine.
+- [3. MPI pmap](https://tensor4all.org/hataori-rs/tutorials/mpi-pmap.html): The collective call shape, `PmapOptions`, root-only input/output, and dynamic batch scheduling across ranks.
+- [4. MPI placement collectives](https://tensor4all.org/hataori-rs/tutorials/mpi-placement.html): `broadcast`, `scatter`, and `gather` for owned serde values alongside `pmap`.
+- [5. Hybrid MPI + Rayon pmap](https://tensor4all.org/hataori-rs/tutorials/hybrid-pmap.html): A Rayon pool on every rank, `LocalMode` inside batches, and the opt-in bounded prefetch.
+- [6. Runtime-loaded MPI (rsmpi-rt)](https://tensor4all.org/hataori-rs/tutorials/rsmpi-rt.html): Tutorials 3–5 without linking MPI: building MPIwrapper, setting `MPI_RT_LIB`, and sharing the runtime with MPI.jl or mpi4py.
 
 ## API reference
 
-- [API Reference](https://shinaoka.github.io/hataori-rs/api/): Landing page for the rustdoc, built with `--features mpi,rayon` so feature-gated items are visible and labelled.
-- [`hataori` rustdoc](https://shinaoka.github.io/hataori-rs/api/hataori/index.html): Function-level documentation for local and facade APIs; the API landing page also links generated runtime rustdoc.
+- [API Reference](https://tensor4all.org/hataori-rs/api/): Landing page for the rustdoc, built with `--features mpi,rayon` so feature-gated items are visible and labelled.
+- [`hataori` rustdoc](https://tensor4all.org/hataori-rs/api/hataori/index.html): Function-level documentation for local and facade APIs; the API landing page also links generated runtime rustdoc.
 
 ## Design and status
 
-- [P0 design](https://shinaoka.github.io/hataori-rs/design.html): The implemented synchronous core: scheduler state machine, wire codec, collective preflight, domain admission, and the acceptance contract.
-- [P1 bounded prefetch](https://shinaoka.github.io/hataori-rs/design/bounded-prefetch.html): The implemented opt-in prefetch of one batch per remote hybrid domain and its invariants.
-- [tenferro adapter](https://shinaoka.github.io/hataori-rs/design/tenferro-adapter.html): The non-publishable `hataori-tenferro` adapter binding a whole-domain `Inner` callback to tenferro's caller-managed Faer backend.
-- [Distributed runtime architecture](https://shinaoka.github.io/hataori-rs/design/distributed-runtime.html): Accepted Phase A-E architecture and current implementation/acceptance boundaries.
-- [Object placement and locality-aware task API](https://shinaoka.github.io/hataori-rs/design/object-placement-api.html): Implemented fixed placement, colocation, leases, and migration-ready routing contract.
-- [Legacy performance runner](https://shinaoka.github.io/hataori-rs/design/legacy-performance-runner.html): Immutable P0/P1 baseline runner and frozen measurement boundary.
-- [Phase A transport foundation](https://shinaoka.github.io/hataori-rs/design/phase-a-transport-foundation.html): Protocol plus memory, TCP, and MPI transport contract.
-- [Phase B structured runtime](https://shinaoka.github.io/hataori-rs/design/phase-b-runtime.html): Lifecycle, domains, typed actions/futures, scopes, cancellation, and bounded runtime state.
-- [Phase C remote objects](https://shinaoka.github.io/hataori-rs/design/phase-c-objects.html): Fixed-placement objects, calls, roots, leases, weak handles, and collection.
-- [Phase D migration](https://shinaoka.github.io/hataori-rs/design/phase-d-migration.html): Explicit freeze/prepare/commit/activate/retire migration.
-- [Phase E algorithms](https://shinaoka.github.io/hataori-rs/design/phase-e-algorithms.html): Bounded batch algorithms, collectives, facades, and the pending performance gate.
-- [Implementation readiness](https://shinaoka.github.io/hataori-rs/implementation-readiness.html): Scope split, resolved review findings, upstream evidence, and the validation matrix behind the P0 core.
-- [Review gate log](https://shinaoka.github.io/hataori-rs/review-log.html): Pre-implementation and per-task review verdicts.
-- [Core acceptance ledger](https://shinaoka.github.io/hataori-rs/core-acceptance-ledger.html): Maps the P0/P1 core acceptance contract to checked evidence and the `scripts/check-core.sh` entry point.
-- [Phase A acceptance ledger](https://shinaoka.github.io/hataori-rs/phase-a-acceptance-ledger.html): Transport-foundation evidence.
-- [Phase B acceptance ledger](https://shinaoka.github.io/hataori-rs/phase-b-acceptance-ledger.html): Structured-runtime evidence.
-- [Phase C acceptance ledger](https://shinaoka.github.io/hataori-rs/phase-c-acceptance-ledger.html): Remote-object evidence.
-- [Phase D acceptance ledger](https://shinaoka.github.io/hataori-rs/phase-d-acceptance-ledger.html): Migration evidence.
-- [Phase E acceptance ledger](https://shinaoka.github.io/hataori-rs/phase-e-acceptance-ledger.html): Algorithm correctness and outstanding performance status.
-- [tenferro acceptance ledger](https://shinaoka.github.io/hataori-rs/tenferro-acceptance-ledger.html): Phase 20a adapter evidence behind `scripts/check-tenferro.sh`.
+- [P0 design](https://tensor4all.org/hataori-rs/design.html): The implemented synchronous core: scheduler state machine, wire codec, collective preflight, domain admission, and the acceptance contract.
+- [P1 bounded prefetch](https://tensor4all.org/hataori-rs/design/bounded-prefetch.html): The implemented opt-in prefetch of one batch per remote hybrid domain and its invariants.
+- [tenferro adapter](https://tensor4all.org/hataori-rs/design/tenferro-adapter.html): The non-publishable `hataori-tenferro` adapter binding a whole-domain `Inner` callback to tenferro's caller-managed Faer backend.
+- [Distributed runtime architecture](https://tensor4all.org/hataori-rs/design/distributed-runtime.html): Accepted Phase A-E architecture and current implementation/acceptance boundaries.
+- [Object placement and locality-aware task API](https://tensor4all.org/hataori-rs/design/object-placement-api.html): Implemented fixed placement, colocation, leases, and migration-ready routing contract.
+- [Legacy performance runner](https://tensor4all.org/hataori-rs/design/legacy-performance-runner.html): Immutable P0/P1 baseline runner and frozen measurement boundary.
+- [Phase A transport foundation](https://tensor4all.org/hataori-rs/design/phase-a-transport-foundation.html): Protocol plus memory, TCP, and MPI transport contract.
+- [Phase B structured runtime](https://tensor4all.org/hataori-rs/design/phase-b-runtime.html): Lifecycle, domains, typed actions/futures, scopes, cancellation, and bounded runtime state.
+- [Phase C remote objects](https://tensor4all.org/hataori-rs/design/phase-c-objects.html): Fixed-placement objects, calls, roots, leases, weak handles, and collection.
+- [Phase D migration](https://tensor4all.org/hataori-rs/design/phase-d-migration.html): Explicit freeze/prepare/commit/activate/retire migration.
+- [Phase E algorithms](https://tensor4all.org/hataori-rs/design/phase-e-algorithms.html): Bounded batch algorithms, collectives, facades, and the pending performance gate.
+- [Implementation readiness](https://tensor4all.org/hataori-rs/implementation-readiness.html): Scope split, resolved review findings, upstream evidence, and the validation matrix behind the P0 core.
+- [Review gate log](https://tensor4all.org/hataori-rs/review-log.html): Pre-implementation and per-task review verdicts.
+- [Core acceptance ledger](https://tensor4all.org/hataori-rs/core-acceptance-ledger.html): Maps the P0/P1 core acceptance contract to checked evidence and the `scripts/check-core.sh` entry point.
+- [Phase A acceptance ledger](https://tensor4all.org/hataori-rs/phase-a-acceptance-ledger.html): Transport-foundation evidence.
+- [Phase B acceptance ledger](https://tensor4all.org/hataori-rs/phase-b-acceptance-ledger.html): Structured-runtime evidence.
+- [Phase C acceptance ledger](https://tensor4all.org/hataori-rs/phase-c-acceptance-ledger.html): Remote-object evidence.
+- [Phase D acceptance ledger](https://tensor4all.org/hataori-rs/phase-d-acceptance-ledger.html): Migration evidence.
+- [Phase E acceptance ledger](https://tensor4all.org/hataori-rs/phase-e-acceptance-ledger.html): Algorithm correctness and outstanding performance status.
+- [tenferro acceptance ledger](https://tensor4all.org/hataori-rs/tenferro-acceptance-ledger.html): Phase 20a adapter evidence behind `scripts/check-tenferro.sh`.
 
 ## Agent rules
 
-- [AGENTS.md](https://github.com/shinaoka/hataori-rs/blob/main/AGENTS.md): Which shared tensor4all agent rules to load, the current implementation status, and where durable architecture changes must be recorded.
-- [REPOSITORY_RULES.md](https://github.com/shinaoka/hataori-rs/blob/main/REPOSITORY_RULES.md): Hataori-specific durable constraints on layering, transports, protocol boundedness, object identity, and validation.
+- [AGENTS.md](https://github.com/tensor4all/hataori-rs/blob/main/AGENTS.md): Which shared tensor4all agent rules to load, the current implementation status, and where durable architecture changes must be recorded.
+- [REPOSITORY_RULES.md](https://github.com/tensor4all/hataori-rs/blob/main/REPOSITORY_RULES.md): Hataori-specific durable constraints on layering, transports, protocol boundedness, object identity, and validation.

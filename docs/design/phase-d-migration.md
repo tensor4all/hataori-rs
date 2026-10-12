@@ -1,6 +1,6 @@
 # Phase D explicit object migration
 
-**Tracking:** [hataori-rs#14](https://github.com/shinaoka/hataori-rs/issues/14)
+**Tracking:** [hataori-rs#14](https://github.com/tensor4all/hataori-rs/issues/14)
 
 **Status:** implementation contract for Phase D. Phases A-C remain unchanged.
 Phase E algorithms, automatic placement policy, process-failure recovery,

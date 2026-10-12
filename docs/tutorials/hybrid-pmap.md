@@ -131,7 +131,7 @@ computation. The root's own domain always stays at capacity one. The design
 and its bounds are described in
 [P1 bounded prefetch](../design/bounded-prefetch.md).
 
-Source: [`examples/mpi_mandelbrot_hybrid.rs`](https://github.com/shinaoka/hataori-rs/blob/main/examples/mpi_mandelbrot_hybrid.rs)
+Source: [`examples/mpi_mandelbrot_hybrid.rs`](https://github.com/tensor4all/hataori-rs/blob/main/examples/mpi_mandelbrot_hybrid.rs)
 
 ## Build and run
 

@@ -1,6 +1,6 @@
 # Phase A acceptance ledger
 
-**Tracking:** [hataori-rs#14](https://github.com/shinaoka/hataori-rs/issues/14)
+**Tracking:** [hataori-rs#14](https://github.com/tensor4all/hataori-rs/issues/14)
 
 **Classification:** PASS for Phase A. This ledger does not accept Phase B-E or
 replace the final repository-scale audit required after all phases.
