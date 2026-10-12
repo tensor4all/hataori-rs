@@ -21,11 +21,11 @@ import re
 import sys
 from urllib.parse import unquote, urlsplit
 
-SITE_NETLOC = "shinaoka.github.io"
+SITE_NETLOC = "tensor4all.org"
 SITE_PREFIX = "/hataori-rs/"
 GITHUB_NETLOC = "github.com"
-GITHUB_PREFIX = "/shinaoka/hataori-rs/blob/main/"
-README_URL = "https://github.com/shinaoka/hataori-rs/blob/main/README.md"
+GITHUB_PREFIX = "/tensor4all/hataori-rs/blob/main/"
+README_URL = "https://github.com/tensor4all/hataori-rs/blob/main/README.md"
 RUSTDOC_PREFIX = "api/hataori/"
 
 LINK_RE = re.compile(r"^\s*-\s+\[([^]]+)\]\(([^)]+)\):\s*(.*)$", re.MULTILINE)

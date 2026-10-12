@@ -13,7 +13,7 @@ rayon = ["dep:rayon", "hataori/rayon"]
 mpi = ["dep:mpi", "dep:serde", "hataori/mpi"]
 
 [dependencies]
-hataori = { git = "https://github.com/shinaoka/hataori-rs.git", rev = "34cb1b1371c8b2f8ef750e2d49d10f9ef8f0782e", default-features = false }
+hataori = { git = "https://github.com/tensor4all/hataori-rs.git", rev = "34cb1b1371c8b2f8ef750e2d49d10f9ef8f0782e", default-features = false }
 mpi = { version = "=0.8.1", default-features = false, optional = true }
 rayon = { version = "1.10", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }

@@ -67,7 +67,7 @@ fn reject_columns_outside(param: &Param, limit: usize) -> MapError {
 - The callback is `FnMut`, so it can mutate captured state such as
   `evaluated`.
 
-Source: [`examples/serial_mandelbrot.rs`](https://github.com/shinaoka/hataori-rs/blob/main/examples/serial_mandelbrot.rs)
+Source: [`examples/serial_mandelbrot.rs`](https://github.com/tensor4all/hataori-rs/blob/main/examples/serial_mandelbrot.rs)
 
 ## Run
 

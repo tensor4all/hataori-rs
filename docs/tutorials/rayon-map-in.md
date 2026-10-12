@@ -148,7 +148,7 @@ the result is deterministic regardless of which column finished first.
 Rayon pool (`MapInError::ForeignPool`), and that no other operation is
 admitted on the domain (`MapInError::DomainBusy`).
 
-Source: [`examples/rayon_mandelbrot.rs`](https://github.com/shinaoka/hataori-rs/blob/main/examples/rayon_mandelbrot.rs)
+Source: [`examples/rayon_mandelbrot.rs`](https://github.com/tensor4all/hataori-rs/blob/main/examples/rayon_mandelbrot.rs)
 
 ## Run
 

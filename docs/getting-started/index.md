@@ -7,19 +7,19 @@ Hataori has no default features. Enable only the backends you use:
 ```toml
 [dependencies]
 # serial only
-hataori = { git = "https://github.com/shinaoka/hataori-rs" }
+hataori = { git = "https://github.com/tensor4all/hataori-rs" }
 
 # rank-local threads
-hataori = { git = "https://github.com/shinaoka/hataori-rs", features = ["rayon"] }
+hataori = { git = "https://github.com/tensor4all/hataori-rs", features = ["rayon"] }
 
 # MPI, linked at build time against the system MPI
-hataori = { git = "https://github.com/shinaoka/hataori-rs", features = ["mpi"] }
+hataori = { git = "https://github.com/tensor4all/hataori-rs", features = ["mpi"] }
 
 # MPI + Rayon hybrid
-hataori = { git = "https://github.com/shinaoka/hataori-rs", features = ["mpi", "rayon"] }
+hataori = { git = "https://github.com/tensor4all/hataori-rs", features = ["mpi", "rayon"] }
 
 # MPI loaded at runtime through MPIABI (no MPI headers or C compiler needed)
-hataori = { git = "https://github.com/shinaoka/hataori-rs", features = ["rsmpi-rt"] }
+hataori = { git = "https://github.com/tensor4all/hataori-rs", features = ["rsmpi-rt"] }
 ```
 
 `mpi` and `rsmpi-rt` expose the same API and are mutually exclusive; enabling

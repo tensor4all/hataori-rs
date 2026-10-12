@@ -149,7 +149,7 @@ Errors are `PlacementError` values with a `PlacementErrorKind`; like `pmap`,
 a failure (for example a serialization error on one rank) converges to the
 same error on every rank.
 
-Source: [`examples/mpi_mandelbrot_placement.rs`](https://github.com/shinaoka/hataori-rs/blob/main/examples/mpi_mandelbrot_placement.rs)
+Source: [`examples/mpi_mandelbrot_placement.rs`](https://github.com/tensor4all/hataori-rs/blob/main/examples/mpi_mandelbrot_placement.rs)
 
 ## Build and run
 

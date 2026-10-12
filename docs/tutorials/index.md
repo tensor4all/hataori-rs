@@ -16,7 +16,7 @@ only the coordination that the new model needs.
 | [6. Runtime-loaded MPI](rsmpi-rt.md) | tutorials 3–5 without linking MPI | `rsmpi_rt_mandelbrot_*` | `rsmpi-rt,tenferro` | `MPI_RT_LIB=… mpiexec` |
 
 The hand-written MPI baseline,
-[`examples/mpi_mandelbrot_raw.rs`](https://github.com/shinaoka/hataori-rs/blob/main/examples/mpi_mandelbrot_raw.rs),
+[`examples/mpi_mandelbrot_raw.rs`](https://github.com/tensor4all/hataori-rs/blob/main/examples/mpi_mandelbrot_raw.rs),
 distributes the same columns round-robin with explicit sends and receives;
 tutorials 3 and 4 compare against it. The π examples
 (`mpi_pi_raw`, `mpi_pi_pmap`) apply the same `pmap` pattern to a second
@@ -25,7 +25,7 @@ workload.
 ## Running the tutorial code
 
 The code on these pages is quoted verbatim from
-[`examples/`](https://github.com/shinaoka/hataori-rs/tree/main/examples)
+[`examples/`](https://github.com/tensor4all/hataori-rs/tree/main/examples)
 and re-synchronized by `scripts/check-doc-snippets.py`. Every example
 asserts its own results and writes a PNG, so a successful exit is the test.
 

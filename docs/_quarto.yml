@@ -32,7 +32,7 @@ format:
 
 website:
   title: "Hataori"
-  repo-url: https://github.com/shinaoka/hataori-rs
+  repo-url: https://github.com/tensor4all/hataori-rs
   navbar:
     left:
       - text: "Getting Started"
@@ -45,7 +45,7 @@ website:
         href: api/index.md
     right:
       - icon: github
-        href: https://github.com/shinaoka/hataori-rs
+        href: https://github.com/tensor4all/hataori-rs
   sidebar:
     style: docked
     contents:

@@ -25,7 +25,7 @@ feature matrix. It depends on Hataori through:
 
 ```toml
 hataori = {
-    git = "https://github.com/shinaoka/hataori-rs.git",
+    git = "https://github.com/tensor4all/hataori-rs.git",
     rev = "34cb1b1371c8b2f8ef750e2d49d10f9ef8f0782e",
     default-features = false,
 }
