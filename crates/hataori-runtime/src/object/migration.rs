@@ -715,6 +715,9 @@ impl ObjectService {
         Ok(packet)
     }
 
+    // `fetch_update` is deprecated on newer toolchains in favor of `try_update`,
+    // which does not exist at the crate's MSRV (1.85).
+    #[allow(deprecated)]
     fn prepare_migration(
         &self,
         mut packet: MigrationPacket,

@@ -1,76 +1,99 @@
-//! Bind a Hataori Rayon domain to tenferro's caller-managed CPU backend.
+//! Hataori [`Lanes`] over one tenferro held CPU session.
 //!
-//! Use the adapter only from an admitted [`hataori::LocalMode::Inner`] callback;
-//! Hataori owns coarse admission and tenferro owns provider-internal fan-out.
+//! tenferro owns the CPU pool, admission, and one owner-inheriting child session
+//! per worker of that pool; Hataori owns which item runs where. Opening a
+//! [`TenferroLanes`] takes tenferro's held root session, and each Hataori lane is
+//! one worker of the backend's own pool plus that worker's child session.
+//!
+//! The adapter creates no pool, no domain, and no thread, installs no
+//! thread-local selector, and never hands tenferro a borrowed pool. The held
+//! session stays on the thread that opened it, so [`TenferroLanes`] is `!Send`
+//! exactly like [`tenferro_cpu::CpuHeldSession`].
+//!
+//! Cancellation is bridged in both directions. A lane that fails, unwinds, or
+//! starts after tenferro stopped the phase cancels the Hataori
+//! [`LaneControl`]; a coordinator that returns, fails, or panics cancels that
+//! control and tenferro's phase control. The coordinator also receives a
+//! probe view of the control (`LaneControl::with_probe`) that follows
+//! tenferro's own stop signal, so a phase that fails before any lane body runs
+//! (a child-session entry or cleanup failure) still releases a coordinator
+//! waiting on cancellation.
 //!
 //! # Examples
 //!
 //! ```
-//! use hataori::{map_in, Domain, LocalMode};
-//! use hataori_tenferro::TenferroDomain;
-//! use std::sync::Arc;
+//! use hataori::map_in_lanes;
+//! use hataori_tenferro::TenferroLanes;
+//! use tenferro_cpu::CpuBackend;
+//! use tenferro_tensor::{Tensor, TensorRead};
 //!
-//! let pool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(2).build()?);
-//! let domain = Domain::external(pool, vec![0, 1], 2)?;
-//! let adapter = TenferroDomain::new(domain)?;
-//! let budgets = map_in(adapter.domain(), LocalMode::Inner, vec![()], |_| {
-//!     adapter
-//!         .with_backend(|backend| backend.execution_info().thread_budget())
-//!         .map_err(|error| error.to_string())
+//! let backend = CpuBackend::with_threads(2)?;
+//! let mut lanes = TenferroLanes::open(&backend)?;
+//! let doubled = map_in_lanes(&mut lanes, vec![1.0_f64, 2.0, 3.0], |item, lane| {
+//!     let x = Tensor::from_vec_col_major(vec![1], vec![item]).map_err(|e| e.to_string())?;
+//!     let sum = lane
+//!         .session()
+//!         .add_read(TensorRead::from_tensor(&x), TensorRead::from_tensor(&x))
+//!         .map_err(|e| e.to_string())?;
+//!     Ok::<f64, String>(sum.as_slice::<f64>().map_err(|e| e.to_string())?[0])
 //! })?;
-//! assert_eq!(budgets, vec![2]);
+//! assert_eq!(doubled, vec![2.0, 4.0, 6.0]);
+//! lanes.close()?;
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
-use hataori::Domain;
+use hataori::{LaneControl, Lanes, LanesError};
 use std::fmt;
-use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use tenferro_cpu::{
-    CpuBackend, CpuBackendError, CpuDomainExecutor, ExternalCpuDomain, ExternalCpuDomainError,
-    RayonCpuDomainExecutor,
+    CpuBackend, CpuHeldSession, CpuHeldSessionError, CpuPhaseError, PhaseControl, PhaseLane,
+    PhaseRunError,
 };
-use tenferro_tensor::CpuDomainId;
+use tenferro_tensor::SessionEntryError;
 
-/// Failure to construct or enter a [`TenferroDomain`].
+/// Failure to open, drive, or close a [`TenferroLanes`].
 ///
 /// # Examples
 ///
 /// ```
-/// use hataori::Domain;
-/// use hataori_tenferro::{TenferroAdapterError, TenferroDomain};
+/// use hataori_tenferro::TenferroLanes;
+/// use tenferro_cpu::CpuBackend;
 ///
-/// let error = TenferroDomain::new(Domain::sequential()).unwrap_err();
-/// assert!(matches!(error, TenferroAdapterError::MissingPool));
+/// let backend = CpuBackend::with_threads(1)?;
+/// let lanes = TenferroLanes::open(&backend)?;
+/// assert!(lanes.close().is_ok());
+/// // The reservation is released, so a second session is admitted.
+/// let reopened = TenferroLanes::open(&backend)?;
+/// assert!(reopened.close().is_ok());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Debug)]
 pub enum TenferroAdapterError {
-    /// The Hataori domain has no Rayon pool.
-    MissingPool,
-    /// tenferro rejected the caller-managed domain descriptor.
-    ExternalDomain(ExternalCpuDomainError),
-    /// tenferro could not construct the caller-managed CPU backend.
-    Backend(CpuBackendError),
-    /// The call did not originate on the bound Hataori domain's Rayon pool.
-    OutsideDomainPool,
-    /// Another adapter entry is active for this domain binding.
-    ConcurrentEntry,
+    /// tenferro could not open the held root session.
+    Open(SessionEntryError),
+    /// A phase lane could not enter or clean up its child session.
+    Session(SessionEntryError),
+    /// tenferro refused to open a phase over the held session.
+    Phase(CpuPhaseError),
+    /// tenferro could not restore the caller's CPU affinity on close.
+    Close(CpuHeldSessionError),
 }
 
 impl fmt::Display for TenferroAdapterError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingPool => formatter.write_str("Hataori domain has no Rayon pool"),
-            Self::ExternalDomain(error) => write!(formatter, "invalid tenferro domain: {error}"),
-            Self::Backend(error) => {
-                write!(formatter, "could not construct tenferro backend: {error}")
+            Self::Open(error) => {
+                write!(formatter, "could not open a tenferro held session: {error}")
             }
-            Self::OutsideDomainPool => {
-                formatter.write_str("tenferro entry must run on the bound Hataori domain pool")
+            Self::Session(error) => {
+                write!(formatter, "tenferro phase lane session failed: {error}")
             }
-            Self::ConcurrentEntry => formatter
-                .write_str("tenferro adapter cannot be entered recursively or concurrently"),
+            Self::Phase(error) => write!(formatter, "could not open a tenferro phase: {error}"),
+            Self::Close(error) => {
+                write!(
+                    formatter,
+                    "could not close the tenferro held session: {error}"
+                )
+            }
         }
     }
 }
@@ -78,176 +101,253 @@ impl fmt::Display for TenferroAdapterError {
 impl std::error::Error for TenferroAdapterError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::ExternalDomain(error) => Some(error),
-            Self::Backend(error) => Some(error),
-            Self::MissingPool | Self::OutsideDomainPool | Self::ConcurrentEntry => None,
+            Self::Open(error) | Self::Session(error) => Some(error),
+            Self::Phase(error) => Some(error),
+            Self::Close(error) => Some(error),
         }
     }
 }
 
-/// A tenferro CPU backend bound to one Hataori Rayon domain.
+/// Hataori lanes over one tenferro held session.
 ///
-/// The binding retains the exact pool selected by `domain`. Call
-/// [`TenferroDomain::with_backend`] only from an admitted
-/// [`hataori::LocalMode::Inner`] callback. The adapter does not acquire a second
-/// Hataori admission slot and never creates or shuts down a Rayon pool.
+/// Opening the executor admits the backend's root session for its whole
+/// lifetime. Each [`Lanes::run`] borrows a phase from that session, so lanes are
+/// workers of the backend's own pool and every lane keeps one child session warm
+/// across the items it pulls. The executor holds no queue of its own: Hataori
+/// pulls items from its own scheduler and hands them to the lane callback.
+///
+/// The held session keeps tenferro's execution admission, its execution-owner
+/// marker, and the caller's narrowed CPU affinity on the opening thread, so the
+/// executor is `!Send` and never migrates. Closing it reports an affinity
+/// restoration failure; dropping it performs the same release best-effort.
 ///
 /// # Examples
 ///
 /// ```
-/// use hataori::Domain;
-/// use hataori_tenferro::TenferroDomain;
-/// use std::sync::Arc;
+/// use hataori::{Lanes, LaneControl};
+/// use hataori_tenferro::TenferroLanes;
+/// use tenferro_cpu::CpuBackend;
+/// use tenferro_tensor::{Tensor, TensorRead};
 ///
-/// let pool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(1).build()?);
-/// let domain = Domain::external(pool, vec![0], 1)?;
-/// let adapter = TenferroDomain::new(domain)?;
-/// assert_eq!(format!("{adapter:?}"), "TenferroDomain { domain_id: 0, worker_count: 1 }");
+/// let backend = CpuBackend::with_threads(2)?;
+/// let mut lanes = TenferroLanes::open(&backend)?;
+/// assert_eq!(lanes.lane_count(), 2);
+/// let x = Tensor::from_vec_col_major(vec![1], vec![5.0_f64])?;
+/// let total = std::sync::atomic::AtomicUsize::new(0);
+/// lanes.run(|_index, lane, control| {
+///     let _ = (control, lane.cancelled());
+///     let value = lane
+///         .session()
+///         .add_read(TensorRead::from_tensor(&x), TensorRead::from_tensor(&x))
+///         .map_err(|error| error.to_string())?;
+///     assert_eq!(value.as_slice::<f64>().map_err(|error| error.to_string())?, &[10.0]);
+///     total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+///     Ok::<(), String>(())
+/// })
+/// .expect("lane fan-out");
+/// assert_eq!(total.into_inner(), 2);
+/// lanes.close()?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub struct TenferroDomain {
-    domain: Domain,
-    pool: Arc<rayon::ThreadPool>,
-    backend: CpuBackend,
-    active: AtomicBool,
+pub struct TenferroLanes<'b> {
+    session: CpuHeldSession<'b>,
+    lane_count: usize,
 }
 
-struct EntryGuard<'active>(&'active AtomicBool);
-
-impl Drop for EntryGuard<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
-    }
-}
-
-impl fmt::Debug for TenferroDomain {
+impl fmt::Debug for TenferroLanes<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("TenferroDomain")
-            .field("domain_id", &self.domain.id().get())
-            .field("worker_count", &self.domain.worker_count())
-            .finish()
+            .debug_struct("TenferroLanes")
+            .field("lane_count", &self.lane_count)
+            .finish_non_exhaustive()
     }
 }
 
-impl TenferroDomain {
-    /// Binds the exact Rayon pool and full worker budget of `domain` to tenferro.
+impl<'b> TenferroLanes<'b> {
+    /// Opens tenferro's held root session on `backend`.
     ///
-    /// This constructs no pool and acquires no Hataori admission. tenferro uses
-    /// caller-managed admission and validates its Faer provider contract before
-    /// this function returns.
+    /// The caller builds and owns the backend. This creates no pool, domain, or
+    /// thread, and it takes no Hataori domain: Hataori schedules items, tenferro
+    /// owns admission and the workers that run them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TenferroAdapterError::Open`] with tenferro's typed session
+    /// entry error when a CPU execution is already active on this thread,
+    /// another held session owns the backend's resources, or the caller's CPU
+    /// mask cannot be narrowed.
     ///
     /// # Examples
     ///
     /// ```
-    /// use hataori::Domain;
-    /// use hataori_tenferro::TenferroDomain;
-    /// use std::sync::Arc;
+    /// use hataori::Lanes;
+    /// use hataori_tenferro::TenferroLanes;
+    /// use tenferro_cpu::CpuBackend;
     ///
-    /// let pool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(1).build()?);
-    /// let domain = Domain::external(pool, vec![0], 1)?;
-    /// assert!(TenferroDomain::new(domain).is_ok());
+    /// let backend = CpuBackend::with_threads(2)?;
+    /// let lanes = TenferroLanes::open(&backend)?;
+    /// assert_eq!(lanes.lane_count(), 2);
+    /// lanes.close()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TenferroAdapterError::MissingPool`] for a sequential domain,
-    /// or preserves tenferro's typed domain/backend construction error.
-    pub fn new(domain: Domain) -> Result<Self, TenferroAdapterError> {
-        let pool = domain
-            .rayon_pool_handle()
-            .ok_or(TenferroAdapterError::MissingPool)?;
-        // INVARIANT: every Rayon-backed Domain validates a positive worker count.
-        let thread_budget = NonZeroUsize::new(domain.worker_count()).unwrap_or(NonZeroUsize::MIN);
-        let executor: Arc<dyn CpuDomainExecutor> =
-            Arc::new(RayonCpuDomainExecutor::new(Arc::clone(&pool)));
-        let id = CpuDomainId::new(u64::from(domain.id().get()));
-        let external = ExternalCpuDomain::new_caller_managed(id, executor, thread_budget)
-            .map_err(TenferroAdapterError::ExternalDomain)?;
-        let backend = CpuBackend::from_external_managed_domains(id, [external])
-            .map_err(TenferroAdapterError::Backend)?;
+    pub fn open(backend: &'b CpuBackend) -> Result<Self, TenferroAdapterError> {
+        let session = backend.open_session().map_err(TenferroAdapterError::Open)?;
         Ok(Self {
-            domain,
-            pool,
-            backend,
-            active: AtomicBool::new(false),
+            session,
+            // A phase drives one lane per worker of the backend's own pool, and
+            // a one-worker backend drives its single lane inline.
+            lane_count: backend.num_threads(),
         })
     }
 
-    /// Returns the Hataori domain owned by this adapter.
+    /// Closes the held session and reports a failed affinity restoration.
     ///
-    /// Pass this reference to [`hataori::map_in`] or a feature-enabled collective
-    /// `pmap` call with [`hataori::LocalMode::Inner`].
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use hataori::Domain;
-    /// use hataori_tenferro::TenferroDomain;
-    /// use std::sync::Arc;
-    ///
-    /// let pool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(1).build()?);
-    /// let adapter = TenferroDomain::new(Domain::external(pool, vec![0], 1)?)?;
-    /// assert_eq!(adapter.domain().worker_count(), 1);
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
-    /// ```
-    pub fn domain(&self) -> &Domain {
-        &self.domain
-    }
-
-    /// Runs a borrowed operation through a cheap clone of the bound backend.
-    ///
-    /// This method must be called from the bound pool inside an admitted
-    /// [`hataori::LocalMode::Inner`] callback. Pool membership is checked before
-    /// `operation` runs. The adapter's own atomic entry gate rejects
-    /// simultaneous or recursive adapter entry with
-    /// [`TenferroAdapterError::ConcurrentEntry`] before the closure runs, so
-    /// tenferro's shared caller-managed guard, which would panic on such
-    /// re-entry, is never reached. tenferro retains its own final
-    /// public-backend guard.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use hataori::{map_in, Domain, LocalMode};
-    /// use hataori_tenferro::TenferroDomain;
-    /// use std::sync::Arc;
-    ///
-    /// let pool = Arc::new(rayon::ThreadPoolBuilder::new().num_threads(1).build()?);
-    /// let domain = Domain::external(pool, vec![0], 1)?;
-    /// let adapter = TenferroDomain::new(domain)?;
-    /// let modes = map_in(adapter.domain(), LocalMode::Inner, vec![()], |_| {
-    ///     adapter
-    ///         .with_backend(|backend| backend.execution_info().admission_mode())
-    ///         .map_err(|error| error.to_string())
-    /// })?;
-    /// assert_eq!(modes, vec![tenferro_cpu::CpuAdmissionMode::CallerManaged]);
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
-    /// ```
+    /// Releasing resources, the execution-owner marker, and the admission
+    /// reservation cannot fail; only restoring the caller's CPU mask can, and
+    /// that failure is reported here instead of being logged.
     ///
     /// # Errors
     ///
-    /// Returns [`TenferroAdapterError::OutsideDomainPool`] when called from any
-    /// thread outside the bound pool, or [`TenferroAdapterError::ConcurrentEntry`]
-    /// for simultaneous or recursive adapter entry. Neither case invokes
-    /// `operation`.
-    pub fn with_backend<R>(
-        &self,
-        operation: impl FnOnce(&mut CpuBackend) -> R,
-    ) -> Result<R, TenferroAdapterError> {
-        if self.pool.current_thread_index().is_none() {
-            return Err(TenferroAdapterError::OutsideDomainPool);
+    /// Returns [`TenferroAdapterError::Close`] with
+    /// [`tenferro_cpu::CpuHeldSessionError::Restore`] when the caller's CPU
+    /// affinity mask cannot be restored. Everything else is released either way.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hataori_tenferro::TenferroLanes;
+    /// use tenferro_cpu::CpuBackend;
+    ///
+    /// let backend = CpuBackend::with_threads(1)?;
+    /// TenferroLanes::open(&backend)?.close()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn close(self) -> Result<(), TenferroAdapterError> {
+        self.session.close().map_err(TenferroAdapterError::Close)
+    }
+}
+
+/// Cancels the Hataori control if the lane unwinds.
+struct CancelOnUnwind<'a, 'b>(&'a LaneControl<'b>);
+
+impl Drop for CancelOnUnwind<'_, '_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.cancel();
         }
-        if self
-            .active
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-            .is_err()
-        {
-            return Err(TenferroAdapterError::ConcurrentEntry);
+    }
+}
+
+/// Stops a phase's lanes when the coordinator returns, errors, or unwinds.
+///
+/// The coordinator's own exit is the end of the work it can feed, and the
+/// Hataori contract also cancels the shared control at that point. tenferro's
+/// `PhaseControl::cancel` is the signal its lanes observe, so both sides are set
+/// on every exit path including unwinding.
+struct CancelPhaseOnExit<'a, 'b, 'c, 'd> {
+    control: &'a LaneControl<'b>,
+    phase: &'c PhaseControl<'d>,
+}
+
+impl Drop for CancelPhaseOnExit<'_, '_, '_, '_> {
+    fn drop(&mut self) {
+        self.control.cancel();
+        self.phase.cancel();
+    }
+}
+
+/// Runs one Hataori lane body on one tenferro lane.
+///
+/// tenferro's lane stop signal and Hataori's control are bridged in both
+/// directions: a lane that tenferro already cancelled marks the Hataori control,
+/// and a lane body that fails or unwinds marks it before the join.
+fn run_lane<E>(
+    control: &LaneControl<'_>,
+    lane_resource: &mut PhaseLane<'_>,
+    index: usize,
+    lane_body: &(impl Fn(usize, &mut PhaseLane<'_>, &LaneControl<'_>) -> Result<(), E> + Sync),
+) -> Result<(), E> {
+    if lane_resource.cancelled() {
+        control.cancel();
+    }
+    let _unwind = CancelOnUnwind(control);
+    match lane_body(index, lane_resource, control) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            control.cancel();
+            Err(error)
         }
-        let _entry = EntryGuard(&self.active);
-        let mut backend = self.backend.clone();
-        Ok(operation(&mut backend))
+    }
+}
+
+/// Maps tenferro's phase outcome onto the Hataori lanes outcome, keeping sources.
+fn phase_error<E>(error: PhaseRunError<E>) -> LanesError<E, TenferroAdapterError> {
+    match error {
+        PhaseRunError::Lane(error) => LanesError::Lane(error),
+        PhaseRunError::Coordinator(error) => LanesError::Coordinator(error),
+        PhaseRunError::Session(error) => LanesError::Executor(TenferroAdapterError::Session(error)),
+        PhaseRunError::SingleLane { .. } => LanesError::SingleLane,
+    }
+}
+
+/// A phase that could not be opened is an executor failure, not a lane one.
+fn executor_error<E>(error: CpuPhaseError) -> LanesError<E, TenferroAdapterError> {
+    LanesError::Executor(TenferroAdapterError::Phase(error))
+}
+
+impl Lanes for TenferroLanes<'_> {
+    type Lane<'l> = PhaseLane<'l>;
+    type Error = TenferroAdapterError;
+
+    fn lane_count(&self) -> usize {
+        self.lane_count
+    }
+
+    fn run<E: Send>(
+        &mut self,
+        lane: impl Fn(usize, &mut PhaseLane<'_>, &LaneControl<'_>) -> Result<(), E> + Sync,
+    ) -> Result<(), LanesError<E, Self::Error>> {
+        let control = LaneControl::new();
+        let outcome = self.session.phase(|phase| {
+            phase.run(|index, lane_resource| run_lane(&control, lane_resource, index, &lane))
+        });
+        match outcome {
+            Ok(result) => result.map_err(phase_error),
+            Err(error) => Err(executor_error(error)),
+        }
+    }
+
+    fn run_with_coordinator<C, E: Send>(
+        &mut self,
+        coordinator: impl FnOnce(&LaneControl<'_>) -> Result<C, E>,
+        lane: impl Fn(usize, &mut PhaseLane<'_>, &LaneControl<'_>) -> Result<(), E> + Sync,
+    ) -> Result<C, LanesError<E, Self::Error>> {
+        let control = LaneControl::new();
+        // The coordinator closure must own `coordinator`, while both closures
+        // share the one control's cancellation flag by reference.
+        let control_ref = &control;
+        let outcome = self.session.phase(|phase| {
+            phase.run_with_coordinator(
+                move |phase_control| {
+                    // tenferro can stop a phase without reaching a lane body (a
+                    // child-session entry or cleanup failure). The coordinator
+                    // observes that stop through a probe view of the same
+                    // control, so its waits on `LaneControl` cannot outlive the
+                    // phase.
+                    let probe = || phase_control.cancelled();
+                    let probed = control_ref.with_probe(&probe);
+                    let _stop = CancelPhaseOnExit {
+                        control: &probed,
+                        phase: phase_control,
+                    };
+                    coordinator(&probed)
+                },
+                |index, lane_resource| run_lane(control_ref, lane_resource, index, &lane),
+            )
+        });
+        match outcome {
+            Ok(result) => result.map_err(phase_error),
+            Err(error) => Err(executor_error(error)),
+        }
     }
 }

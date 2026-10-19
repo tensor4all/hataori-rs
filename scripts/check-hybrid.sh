@@ -57,6 +57,43 @@ run_case() {
     }
 }
 
+# Runs one abort fixture at n=2 and requires the exact MPI abort code.
+#
+# The code must be observed either in the launcher's abort banner or as the
+# launcher's exit status: Open MPI's banner rendering intermittently emits its
+# own "Data unpack" show_help error instead of the banner for the same abort, so
+# the exit status is the equivalent, equally exact evidence.
+expect_abort() {
+    local backend=$1 binary=$2 code=$3 deadline=$4 label=$5
+    shift 5
+    local output=$tmp_dir/$backend-$label.log
+    local -a environment=(env "$@")
+    if [[ $backend == runtime ]]; then
+        environment+=(MPI_RT_LIB=$mpi_rt_lib)
+    fi
+    set +e
+    setsid timeout --signal=TERM --kill-after=5s "$deadline" \
+        "${environment[@]}" "$launcher" "${launcher_flags[@]}" -n 2 "$binary" \
+        >"$output" 2>&1
+    local status=$?
+    set -e
+    if ((status == 0 || status == 124 || status == 137)); then
+        cat "$output" >&2
+        printf 'check-hybrid: %s %s did not abort promptly\n' "$backend" "$label" >&2
+        return 1
+    fi
+    if grep -Eq 'MPI_ABORT|MPI_Abort' "$output" \
+        && grep -Eq "errorcode[^0-9]*$code|code[^0-9]*$code" "$output"; then
+        return 0
+    fi
+    if ((status == code)); then
+        return 0
+    fi
+    cat "$output" >&2
+    printf 'check-hybrid: %s %s lacked abort(%s) evidence\n' "$backend" "$label" "$code" >&2
+    return 1
+}
+
 for count in 1 2 4; do
     output=$tmp_dir/upstream-mpi-only-$count.log
     if ! setsid timeout --signal=TERM --kill-after=5s 120s \
@@ -74,52 +111,36 @@ for backend in upstream runtime; do
     done
 
     binary=$tmp_dir/$backend
-    output=$tmp_dir/$backend-panic.log
-    environment=(env HATAORI_HYBRID_PANIC=1)
-    if [[ $backend == runtime ]]; then
-        environment+=(MPI_RT_LIB=$mpi_rt_lib)
-    fi
-    set +e
-    setsid timeout --signal=TERM --kill-after=5s 60s \
-        "${environment[@]}" "$launcher" "${launcher_flags[@]}" -n 2 "$binary" \
-        >"$output" 2>&1
-    status=$?
-    set -e
-    if ((status == 0 || status == 124 || status == 137)); then
-        cat "$output" >&2
-        printf 'check-hybrid: %s panic path did not abort promptly\n' "$backend" >&2
+    if ! expect_abort "$backend" "$binary" 70 60s panic HATAORI_HYBRID_PANIC=1; then
         exit 1
     fi
-    grep -Eq 'MPI_ABORT|MPI_Abort|expected hybrid callback panic' "$output" || {
-        cat "$output" >&2
-        printf 'check-hybrid: %s panic path lacked abort evidence\n' "$backend" >&2
-        exit 1
-    }
 
-    output=$tmp_dir/$backend-prefetch-transfer-abort.log
+    for count in 1 2; do
+        output=$tmp_dir/$backend-single-lane-$count.log
+        environment=(env HATAORI_SINGLE_LANE_FALLBACK=1)
+        if [[ $backend == runtime ]]; then
+            environment+=(MPI_RT_LIB=$mpi_rt_lib)
+        fi
+        if ! setsid timeout --signal=TERM --kill-after=5s 120s \
+            "${environment[@]}" "$launcher" "${launcher_flags[@]}" -n "$count" "$binary" \
+            >"$output" 2>&1; then
+            cat "$output" >&2
+            printf 'check-hybrid: %s single-lane coordinator fallback failed at n=%s\n' \
+                "$backend" "$count" >&2
+            exit 1
+        fi
+    done
+
+    if ! expect_abort "$backend" "$binary" 71 15s single-lane-prefetch-panic \
+        HATAORI_SINGLE_LANE_PREFETCH_PANIC=1; then
+        exit 1
+    fi
+
     trace=$tmp_dir/$backend-prefetch-transfer-abort
-    environment=(env HATAORI_PREFETCH_TRANSFER_ABORT=$trace)
-    if [[ $backend == runtime ]]; then
-        environment+=(MPI_RT_LIB=$mpi_rt_lib)
-    fi
-    set +e
-    setsid timeout --signal=TERM --kill-after=5s 15s \
-        "${environment[@]}" "$launcher" "${launcher_flags[@]}" -n 2 "$binary" \
-        >"$output" 2>&1
-    status=$?
-    set -e
-    if ((status == 0 || status == 124 || status == 137)); then
-        cat "$output" >&2
-        printf 'check-hybrid: %s live-prefetch transfer failure did not abort promptly\n' \
-            "$backend" >&2
+    if ! expect_abort "$backend" "$binary" 75 15s prefetch-transfer-abort \
+        HATAORI_PREFETCH_TRANSFER_ABORT="$trace"; then
         exit 1
     fi
-    grep -Eq 'MPI_ABORT|MPI_Abort' "$output" && grep -Eq 'errorcode[^0-9]*75|code[^0-9]*75' "$output" || {
-        cat "$output" >&2
-        printf 'check-hybrid: %s live-prefetch transfer failure lacked abort(75) evidence\n' \
-            "$backend" >&2
-        exit 1
-    }
 done
 
-printf 'MPI-only preflight and hybrid checks passed for mpi and rsmpi-rt (n=1,2,4)\n'
+printf 'MPI-only preflight, hybrid lanes, single-lane fallback, and single-lane prefetch panic checks passed for mpi and rsmpi-rt (n=1,2,4)\n'

@@ -496,6 +496,9 @@ impl Shared {
         }
     }
 
+    // `fetch_update` is deprecated on newer toolchains in favor of `try_update`,
+    // which does not exist at the crate's MSRV (1.85).
+    #[allow(deprecated)]
     fn next_request(&self) -> Result<RequestId, RuntimeError> {
         let sequence = self
             .next_request
@@ -510,6 +513,9 @@ impl Shared {
             .map_err(|_| RuntimeError::Protocol("request id overflow".into()))
     }
 
+    // `fetch_update` is deprecated on newer toolchains in favor of `try_update`,
+    // which does not exist at the crate's MSRV (1.85).
+    #[allow(deprecated)]
     fn next_object(&self) -> Result<ObjectId, RuntimeError> {
         let sequence = self
             .next_object
@@ -525,6 +531,9 @@ impl Shared {
             .map_err(|_| RuntimeError::Protocol("object id overflow".into()))
     }
 
+    // `fetch_update` is deprecated on newer toolchains in favor of `try_update`,
+    // which does not exist at the crate's MSRV (1.85).
+    #[allow(deprecated)]
     fn next_message(&self) -> Result<MessageId, RuntimeError> {
         let value = self
             .next_message

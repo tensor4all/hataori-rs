@@ -4,10 +4,17 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.96"
 publish = false
-description = "Caller-managed tenferro CPU integration for Hataori domains"
+description = "Hataori lanes over a tenferro held CPU session"
+
+[features]
+mpi = ["hataori/mpi", "dep:mpi-upstream"]
 
 [dependencies]
 hataori = { path = "../..", features = ["rayon"] }
-rayon = "1.10"
-tenferro-cpu = { git = "https://github.com/tensor4all/tenferro-rs", rev = "a21a4c602fc6700b9bc0c3f1b14ebd19b9d7ec45", default-features = false, features = ["cpu-faer"] }
-tenferro-tensor = { git = "https://github.com/tensor4all/tenferro-rs", rev = "a21a4c602fc6700b9bc0c3f1b14ebd19b9d7ec45" }
+mpi-upstream = { package = "mpi", version = "=0.8.1", default-features = false, optional = true }
+tenferro-cpu = { git = "https://github.com/tensor4all/tenferro-rs", rev = "74aa7fac31490f7773978e6fc2b1e80391018b73", default-features = false, features = ["native"] }
+tenferro-tensor = { git = "https://github.com/tensor4all/tenferro-rs", rev = "74aa7fac31490f7773978e6fc2b1e80391018b73" }
+
+[[example]]
+name = "pmap_lanes_smoke"
+required-features = ["mpi"]

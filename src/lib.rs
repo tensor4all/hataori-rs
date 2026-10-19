@@ -1,6 +1,7 @@
 //! Hataori: local data parallelism and an optional long-lived distributed runtime.
 
 mod domain;
+mod lanes;
 #[cfg(feature = "rayon")]
 mod local;
 mod map;
@@ -46,11 +47,18 @@ pub mod blocking {
         runtime.block_on(future)
     }
 }
+pub use lanes::{map_in_lanes, LaneControl, LaneExecutorError, Lanes, LanesError, MapInError};
 #[cfg(feature = "rayon")]
-pub use local::{map_in, MapInError};
+pub use local::{map_in, RayonLanes, RayonLanesError};
 pub use map::{map, MapError};
 #[cfg(any(feature = "mpi", feature = "rsmpi-rt"))]
 pub use placement::{broadcast, gather, scatter, PlacementError, PlacementErrorKind};
+#[cfg(all(
+    feature = "rayon",
+    any(feature = "mpi", feature = "rsmpi-rt"),
+    not(feature = "runtime")
+))]
+pub use pmap::pmap_lanes;
 #[cfg(all(any(feature = "mpi", feature = "rsmpi-rt"), not(feature = "runtime")))]
 pub use pmap::{pmap, PmapOptions};
 #[cfg(any(feature = "mpi", feature = "rsmpi-rt"))]
