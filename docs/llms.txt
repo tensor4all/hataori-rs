@@ -39,7 +39,7 @@
 
 ## Design and status
 
-- [P0 design](https://shinaoka.github.io/hataori-rs/design.html): The implemented synchronous core: scheduler state machine, wire codec, collective preflight, domain admission, and the acceptance contract.
+- [P0 design](https://shinaoka.github.io/hataori-rs/design.html): The implemented synchronous core: the execution-lanes local fan-out (`Lanes`, `map_in_lanes`, `pmap_lanes`, `RayonLanes`), scheduler state machine, wire codec, collective preflight, domain admission, and the acceptance contract.
 - [P1 bounded prefetch](https://shinaoka.github.io/hataori-rs/design/bounded-prefetch.html): The implemented opt-in prefetch of one batch per remote hybrid domain and its invariants.
 - [tenferro adapter](https://shinaoka.github.io/hataori-rs/design/tenferro-adapter.html): The non-publishable `hataori-tenferro` adapter binding a whole-domain `Inner` callback to tenferro's caller-managed Faer backend.
 - [Distributed runtime architecture](https://shinaoka.github.io/hataori-rs/design/distributed-runtime.html): Accepted Phase A-E architecture and current implementation/acceptance boundaries.

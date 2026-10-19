@@ -1,6 +1,12 @@
 use crate::domain::{Domain, LocalMode};
 #[cfg(feature = "rayon")]
-use crate::local::{in_rayon_worker_context, run_in_current_pool, run_in_pool};
+use crate::lanes::batch::{
+    idle_backoff, run_lane, LocalBatch, LocalBatchOutcome, LocalBatchResult, LocalQueue,
+};
+#[cfg(feature = "rayon")]
+use crate::lanes::{LaneControl, Lanes, LanesError};
+#[cfg(feature = "rayon")]
+use crate::local::{in_rayon_worker_context, RayonLanes};
 use crate::map::truncate_message;
 #[cfg(feature = "rayon")]
 use crate::mpi_backend;
@@ -9,16 +15,14 @@ use crate::mpi_backend::traits::*;
 use crate::mpi_check::mpi_call;
 use crate::scheduler::{BatchId, Coordinator, Dispatch, ItemResult, SchedulerError};
 use crate::wire::{self, ErrorClass, ErrorKey, Header, MessageKind, MessageStatus};
-#[cfg(feature = "rayon")]
-use rayon::Scope;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::cell::Cell;
+#[cfg(feature = "rayon")]
+use std::convert::Infallible;
 use std::fmt::{self, Display, Formatter};
 use std::num::NonZeroUsize;
 #[cfg(all(test, not(feature = "rayon")))]
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-#[cfg(feature = "rayon")]
-use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 
 const HEADER_TAG: i32 = 0;
 const PAYLOAD_TAG: i32 = 1;
@@ -302,249 +306,6 @@ enum ResultPayload<U> {
     Error(CallbackFailure),
 }
 
-#[cfg(feature = "rayon")]
-enum LocalBatchResult<U> {
-    Values(Vec<ItemResult<U>>),
-    Error(CallbackFailure),
-    Panic,
-}
-
-#[cfg(feature = "rayon")]
-struct LocalBatchOutcome<U> {
-    batch_id: BatchId,
-    result: LocalBatchResult<U>,
-}
-
-#[cfg(feature = "rayon")]
-enum WorkerBatchResult<U> {
-    Values(Vec<(usize, U)>),
-    Error {
-        failure: CallbackFailure,
-        class: ErrorClass,
-        kind: PmapErrorKind,
-    },
-    Panic,
-}
-
-#[cfg(feature = "rayon")]
-struct WorkerBatchOutcome<U> {
-    batch_id: u64,
-    item_count: usize,
-    result: WorkerBatchResult<U>,
-}
-
-#[cfg(feature = "rayon")]
-enum PrefetchedBatch<T, U> {
-    Work {
-        batch_id: u64,
-        item_count: usize,
-        items: Vec<(usize, T)>,
-    },
-    Ready(WorkerBatchOutcome<U>),
-    Stop,
-}
-
-#[cfg(feature = "rayon")]
-enum NextWorkerBatch<U> {
-    Running(Receiver<WorkerBatchOutcome<U>>),
-    Ready(WorkerBatchOutcome<U>),
-    Stop,
-}
-
-#[cfg(feature = "rayon")]
-fn spawn_local_batch<'scope, T, U, E, F>(
-    scope: &Scope<'scope>,
-    mode: LocalMode,
-    batch: crate::scheduler::Batch<T>,
-    f: &'scope F,
-    sender: SyncSender<LocalBatchOutcome<U>>,
-) where
-    T: Send + 'scope,
-    U: Send + 'scope,
-    E: Display + Send,
-    F: Fn(T) -> Result<U, E> + Send + Sync,
-{
-    let batch_id = batch.id();
-    let (indices, values): (Vec<_>, Vec<_>) = batch
-        .into_items()
-        .into_iter()
-        .map(|item| (item.original_index(), item.into_value()))
-        .unzip();
-    scope.spawn(move |_| {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run_in_current_pool(mode, values, f)
-        }));
-        let result = match result {
-            Ok(Ok(values)) => LocalBatchResult::Values(
-                indices
-                    .into_iter()
-                    .zip(values)
-                    .map(|(index, value)| ItemResult::new(index, value))
-                    .collect(),
-            ),
-            Ok(Err(error)) => LocalBatchResult::Error(CallbackFailure {
-                index: indices[error.index()],
-                kind: PmapErrorKind::User.code(),
-                message: error.message().to_owned(),
-            }),
-            Err(_) => LocalBatchResult::Panic,
-        };
-        let _ = sender.send(LocalBatchOutcome { batch_id, result });
-    });
-}
-
-#[cfg(feature = "rayon")]
-fn spawn_worker_batch<'scope, T, U, E, F>(
-    scope: &Scope<'scope>,
-    mode: LocalMode,
-    batch_id: u64,
-    item_count: usize,
-    items: Vec<(usize, T)>,
-    f: &'scope F,
-    sender: SyncSender<WorkerBatchOutcome<U>>,
-) where
-    T: Send + 'scope,
-    U: Send + 'scope,
-    E: Display + Send,
-    F: Fn(T) -> Result<U, E> + Send + Sync,
-{
-    let (indices, values): (Vec<_>, Vec<_>) = items.into_iter().unzip();
-    scope.spawn(move |_| {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run_in_current_pool(mode, values, f)
-        }));
-        let result = match result {
-            Ok(Ok(values)) => WorkerBatchResult::Values(indices.into_iter().zip(values).collect()),
-            Ok(Err(error)) => {
-                let index = indices[error.index()];
-                WorkerBatchResult::Error {
-                    failure: CallbackFailure {
-                        index,
-                        kind: PmapErrorKind::User.code(),
-                        message: error.message().to_owned(),
-                    },
-                    class: ErrorClass::Callback,
-                    kind: PmapErrorKind::User,
-                }
-            }
-            Err(_) => WorkerBatchResult::Panic,
-        };
-        let _ = sender.send(WorkerBatchOutcome {
-            batch_id,
-            item_count,
-            result,
-        });
-    });
-}
-
-#[cfg(feature = "rayon")]
-fn receive_prefetched_batch<C, T, U>(
-    comm: &C,
-    root: i32,
-) -> Result<PrefetchedBatch<T, U>, PmapError>
-where
-    C: Communicator,
-    T: DeserializeOwned,
-{
-    let value = receive_header(comm, root)?;
-    match value.kind() {
-        MessageKind::Task => {
-            let batch_id = value.batch_id();
-            match receive_payload::<_, Vec<(usize, T)>>(comm, root, value) {
-                Ok(items) => Ok(PrefetchedBatch::Work {
-                    batch_id,
-                    item_count: items.len(),
-                    items,
-                }),
-                Err(error) => Ok(PrefetchedBatch::Ready(WorkerBatchOutcome {
-                    batch_id,
-                    item_count: 1,
-                    result: WorkerBatchResult::Error {
-                        failure: CallbackFailure {
-                            index: usize::try_from(value.item_count()).unwrap_or(usize::MAX),
-                            kind: PmapErrorKind::Wire.code(),
-                            message: error.message().to_owned(),
-                        },
-                        class: ErrorClass::WireProtocol,
-                        kind: PmapErrorKind::Wire,
-                    },
-                })),
-            }
-        }
-        MessageKind::Stop => Ok(PrefetchedBatch::Stop),
-        _ => Err(protocol_error("worker received an unexpected message")),
-    }
-}
-
-#[cfg(feature = "rayon")]
-fn send_worker_outcome<C, U>(
-    comm: &C,
-    root: i32,
-    rank: i32,
-    size: i32,
-    outcome: WorkerBatchOutcome<U>,
-    local_key: &mut i64,
-    local_error: &mut Option<LocalError>,
-) -> Result<(), PmapError>
-where
-    C: Communicator,
-    U: Serialize,
-{
-    match outcome.result {
-        WorkerBatchResult::Values(values) => send_frame(
-            comm,
-            root,
-            MessageKind::Result,
-            MessageStatus::Ok,
-            outcome.batch_id,
-            values.len(),
-            &ResultPayload::Values(values),
-        ),
-        WorkerBatchResult::Error {
-            failure,
-            class,
-            kind,
-        } => {
-            let key = error_key(failure.index, class, rank, size)?;
-            if key < *local_key {
-                *local_key = key;
-                *local_error = Some((kind, failure.message.clone()));
-            }
-            send_frame(
-                comm,
-                root,
-                MessageKind::Result,
-                MessageStatus::Error,
-                outcome.batch_id,
-                outcome.item_count,
-                &ResultPayload::<U>::Error(failure),
-            )
-        }
-        WorkerBatchResult::Panic => mpi_call!(comm.abort(71)),
-    }
-}
-
-#[cfg(feature = "rayon")]
-fn spawn_root_batch<'scope, T, U, E, F>(
-    scope: &Scope<'scope>,
-    scheduler: &mut Coordinator<T, U>,
-    mode: LocalMode,
-    f: &'scope F,
-) -> Result<Option<Receiver<LocalBatchOutcome<U>>>, PmapError>
-where
-    T: Send + 'scope,
-    U: Send + 'scope,
-    E: Display + Send,
-    F: Fn(T) -> Result<U, E> + Send + Sync,
-{
-    let Some(batch) = scheduler.next_root_batch().map_err(scheduler_error)? else {
-        return Ok(None);
-    };
-    let (sender, receiver) = mpsc::sync_channel(1);
-    spawn_local_batch(scope, mode, batch, f, sender);
-    Ok(Some(receiver))
-}
-
 fn error_key(
     task_key: usize,
     class: ErrorClass,
@@ -781,19 +542,276 @@ where
 }
 
 #[cfg(feature = "rayon")]
-fn hybrid_worker_loop_no_prefetch<C, T, U, E, F>(
+enum PrefetchedBatch<T, U> {
+    Work {
+        batch_id: u64,
+        items: Vec<(usize, T)>,
+    },
+    Ready(LocalBatchOutcome<U>),
+    Stop,
+}
+
+#[cfg(feature = "rayon")]
+fn receive_prefetched_batch<C, T, U>(
+    comm: &C,
+    root: i32,
+) -> Result<PrefetchedBatch<T, U>, PmapError>
+where
+    C: Communicator,
+    T: DeserializeOwned,
+{
+    let value = receive_header(comm, root)?;
+    match value.kind() {
+        MessageKind::Task => {
+            let batch_id = value.batch_id();
+            match receive_payload::<_, Vec<(usize, T)>>(comm, root, value) {
+                Ok(items) => Ok(PrefetchedBatch::Work { batch_id, items }),
+                // The task transfer failed after its header: report one wire
+                // failure for this batch instead of handing it to a lane.
+                Err(error) => Ok(PrefetchedBatch::Ready(LocalBatchOutcome::wire_error(
+                    batch_id,
+                    1,
+                    usize::try_from(value.item_count()).unwrap_or(usize::MAX),
+                    error.message().to_owned(),
+                ))),
+            }
+        }
+        MessageKind::Stop => Ok(PrefetchedBatch::Stop),
+        _ => Err(protocol_error("worker received an unexpected message")),
+    }
+}
+
+#[cfg(feature = "rayon")]
+fn send_worker_outcome<C, U>(
+    comm: &C,
+    root: i32,
+    rank: i32,
+    size: i32,
+    outcome: LocalBatchOutcome<U>,
+    local_key: &mut i64,
+    local_error: &mut Option<LocalError>,
+) -> Result<(), PmapError>
+where
+    C: Communicator,
+    U: Serialize,
+{
+    let failure = match outcome.result {
+        LocalBatchResult::Values(values) => {
+            return send_frame(
+                comm,
+                root,
+                MessageKind::Result,
+                MessageStatus::Ok,
+                outcome.batch_id,
+                values.len(),
+                &ResultPayload::Values(values),
+            )
+        }
+        LocalBatchResult::CallbackError { index, message } => BatchFailure {
+            index,
+            message,
+            class: ErrorClass::Callback,
+            kind: PmapErrorKind::User,
+        },
+        LocalBatchResult::WireError { index, message } => BatchFailure {
+            index,
+            message,
+            class: ErrorClass::WireProtocol,
+            kind: PmapErrorKind::Wire,
+        },
+        LocalBatchResult::Panic => mpi_call!(comm.abort(71)),
+    };
+    let key = error_key(failure.index, failure.class, rank, size)?;
+    if key < *local_key {
+        *local_key = key;
+        *local_error = Some((failure.kind, failure.message.clone()));
+    }
+    let payload = CallbackFailure {
+        index: failure.index,
+        kind: failure.kind.code(),
+        message: failure.message,
+    };
+    send_frame(
+        comm,
+        root,
+        MessageKind::Result,
+        MessageStatus::Error,
+        outcome.batch_id,
+        outcome.item_count,
+        &ResultPayload::<U>::Error(payload),
+    )
+}
+
+#[cfg(feature = "rayon")]
+struct BatchFailure {
+    index: usize,
+    message: String,
+    class: ErrorClass,
+    kind: PmapErrorKind,
+}
+
+/// How the coordinator hands one local batch to the execution resource.
+#[cfg(feature = "rayon")]
+trait BatchSink<T, U> {
+    /// Submits `batch`. A concurrent sink returns immediately; an inline sink
+    /// has already executed the batch when this returns.
+    fn submit(&mut self, batch: LocalBatch<T>);
+
+    /// Returns the outcome of `batch_id` if the lanes already produced it.
+    fn try_wait(&mut self, batch_id: u64) -> Option<LocalBatchOutcome<U>>;
+
+    /// Waits for the outcome of `batch_id`, bounded by executor cancellation.
+    fn wait(&mut self, batch_id: u64) -> Option<LocalBatchOutcome<U>> {
+        loop {
+            if let Some(outcome) = self.try_wait(batch_id) {
+                return Some(outcome);
+            }
+            if self.cancelled() {
+                return None;
+            }
+            idle_backoff();
+        }
+    }
+
+    /// Whether the executor cancelled the run (lane infrastructure failure).
+    fn cancelled(&self) -> bool;
+}
+
+#[cfg(feature = "rayon")]
+struct ConcurrentSink<'a, T, U> {
+    queue: &'a LocalQueue<T, U>,
+    control: &'a LaneControl<'a>,
+}
+
+#[cfg(feature = "rayon")]
+impl<T, U> BatchSink<T, U> for ConcurrentSink<'_, T, U> {
+    fn submit(&mut self, batch: LocalBatch<T>) {
+        self.queue.submit(batch);
+    }
+
+    fn try_wait(&mut self, batch_id: u64) -> Option<LocalBatchOutcome<U>> {
+        self.queue.take_outcome(batch_id)
+    }
+
+    fn cancelled(&self) -> bool {
+        self.control.cancelled()
+    }
+}
+
+/// A sink that executes each batch on the coordinator thread through `lanes.run`.
+#[cfg(feature = "rayon")]
+struct InlineSink<S, U> {
+    run_batch: S,
+    outcome: Option<LocalBatchOutcome<U>>,
+}
+
+#[cfg(feature = "rayon")]
+impl<S, T, U> BatchSink<T, U> for InlineSink<S, U>
+where
+    S: FnMut(LocalBatch<T>) -> LocalBatchOutcome<U>,
+{
+    fn submit(&mut self, batch: LocalBatch<T>) {
+        let outcome = (self.run_batch)(batch);
+        self.outcome = Some(outcome);
+    }
+
+    fn try_wait(&mut self, batch_id: u64) -> Option<LocalBatchOutcome<U>> {
+        self.outcome
+            .take()
+            .filter(|outcome| outcome.batch_id == batch_id)
+    }
+
+    fn cancelled(&self) -> bool {
+        false
+    }
+}
+
+/// Runs one batch on the calling thread through the lanes executor.
+#[cfg(feature = "rayon")]
+fn run_batch_inline<L, T, U, E, F>(
+    lanes: &mut L,
+    f: &F,
+    batch: LocalBatch<T>,
+) -> LocalBatchOutcome<U>
+where
+    L: Lanes,
+    T: Send,
+    U: Send,
+    E: Display + Send,
+    F: Fn(T, &mut L::Lane<'_>) -> Result<U, E> + Sync,
+{
+    let batch_id = batch.batch_id;
+    let item_count = batch.item_count;
+    let queue = LocalQueue::<T, U>::new();
+    queue.submit(batch);
+    queue.close();
+    let joined = lanes.run(|_index, lane, control| {
+        run_lane(&queue, f, control, lane);
+        Ok::<(), Infallible>(())
+    });
+    let joined = match joined {
+        Ok(()) => true,
+        Err(LanesError::Lane(never)) => match never {},
+        Err(LanesError::Coordinator(never)) => match never {},
+        // The coordinator turns an executor failure into the ordinary lane abort.
+        Err(LanesError::SingleLane) | Err(LanesError::Reentrant) | Err(LanesError::Executor(_)) => {
+            false
+        }
+    };
+    if joined {
+        if let Some(outcome) = queue.take_outcome(batch_id) {
+            return outcome;
+        }
+    }
+    LocalBatchOutcome {
+        batch_id,
+        item_count,
+        result: LocalBatchResult::Panic,
+    }
+}
+
+#[cfg(feature = "rayon")]
+fn lane_executor_failure(error: impl Display) -> PmapError {
+    PmapError::new(
+        PmapErrorKind::Protocol,
+        format!("lane executor failed: {error}"),
+    )
+}
+
+/// The worker-side MPI protocol, generic over how local batches execute.
+#[cfg(feature = "rayon")]
+fn hybrid_worker_protocol<C, S, T, U>(
     comm: &C,
     root: i32,
     mode: LocalMode,
-    pool: &rayon::ThreadPool,
-    f: F,
+    prefetch: bool,
+    sink: &mut S,
 ) -> Result<(i64, Option<LocalError>), PmapError>
 where
     C: Communicator,
+    S: BatchSink<T, U>,
     T: Serialize + DeserializeOwned + Send,
     U: Serialize + DeserializeOwned + Send,
-    E: Display + Send,
-    F: Fn(T) -> Result<U, E> + Send + Sync,
+{
+    if prefetch {
+        hybrid_worker_protocol_prefetch(comm, root, mode, sink)
+    } else {
+        hybrid_worker_protocol_plain(comm, root, mode, sink)
+    }
+}
+
+#[cfg(feature = "rayon")]
+fn hybrid_worker_protocol_plain<C, S, T, U>(
+    comm: &C,
+    root: i32,
+    mode: LocalMode,
+    sink: &mut S,
+) -> Result<(i64, Option<LocalError>), PmapError>
+where
+    C: Communicator,
+    S: BatchSink<T, U>,
+    T: Serialize + DeserializeOwned + Send,
+    U: Serialize + DeserializeOwned + Send,
 {
     let rank = mpi_call!(comm.rank());
     let size = mpi_call!(comm.size());
@@ -829,55 +847,21 @@ where
                         continue;
                     }
                 };
-                let (indices, values): (Vec<_>, Vec<_>) = items.into_iter().unzip();
-                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_in_pool(pool, mode, values, &f)
-                }));
-                let result = match outcome {
-                    Ok(Ok(values)) => {
-                        ResultPayload::Values(indices.into_iter().zip(values).collect())
-                    }
-                    Ok(Err(error)) => {
-                        let index = indices[error.index()];
-                        let failure = CallbackFailure {
-                            index,
-                            kind: PmapErrorKind::User.code(),
-                            message: error.message().to_owned(),
-                        };
-                        let key = error_key(index, ErrorClass::Callback, rank, size)?;
-                        local_key = local_key.min(key);
-                        local_error = Some((PmapErrorKind::User, failure.message.clone()));
-                        ResultPayload::Error(failure)
-                    }
-                    Err(_) => mpi_call!(comm.abort(71)),
+                let batch_id = value.batch_id();
+                sink.submit(LocalBatch::new(batch_id, mode, items));
+                let outcome = match sink.wait(batch_id) {
+                    Some(outcome) => outcome,
+                    None => mpi_call!(comm.abort(71)),
                 };
-                match result {
-                    ResultPayload::Values(values) => {
-                        let item_count = values.len();
-                        let payload = ResultPayload::Values(values);
-                        send_frame(
-                            comm,
-                            root,
-                            MessageKind::Result,
-                            MessageStatus::Ok,
-                            value.batch_id(),
-                            item_count,
-                            &payload,
-                        )?;
-                    }
-                    ResultPayload::Error(failure) => {
-                        let payload = ResultPayload::<U>::Error(failure);
-                        send_frame(
-                            comm,
-                            root,
-                            MessageKind::Result,
-                            MessageStatus::Error,
-                            value.batch_id(),
-                            value.item_count() as usize,
-                            &payload,
-                        )?;
-                    }
-                }
+                send_worker_outcome(
+                    comm,
+                    root,
+                    rank,
+                    size,
+                    outcome,
+                    &mut local_key,
+                    &mut local_error,
+                )?;
             }
             MessageKind::Stop => {
                 send_empty(comm, root, MessageKind::Drain, 0)?;
@@ -889,34 +873,30 @@ where
 }
 
 #[cfg(feature = "rayon")]
-fn hybrid_worker_loop_prefetch<C, T, U, E, F>(
+fn hybrid_worker_protocol_prefetch<C, S, T, U>(
     comm: &C,
     root: i32,
     mode: LocalMode,
-    pool: &rayon::ThreadPool,
-    f: F,
+    sink: &mut S,
 ) -> Result<(i64, Option<LocalError>), PmapError>
 where
     C: Communicator,
+    S: BatchSink<T, U>,
     T: Serialize + DeserializeOwned + Send,
     U: Serialize + DeserializeOwned + Send,
-    E: Display + Send,
-    F: Fn(T) -> Result<U, E> + Send + Sync,
 {
     let rank = mpi_call!(comm.rank());
     let size = mpi_call!(comm.size());
     let mut local_key = ErrorKey::NO_ERROR_KEY;
     let mut local_error = None;
 
-    pool.in_place_scope(|scope| 'idle: loop {
+    'idle: loop {
         send_empty(comm, root, MessageKind::Ready, 0)?;
-        let first = receive_prefetched_batch::<_, T, U>(comm, root)?;
-        let (batch_id, item_count, items) = match first {
-            PrefetchedBatch::Work {
-                batch_id,
-                item_count,
-                items,
-            } => (batch_id, item_count, items),
+        let mut current = match receive_prefetched_batch::<_, T, U>(comm, root)? {
+            PrefetchedBatch::Work { batch_id, items } => {
+                sink.submit(LocalBatch::new(batch_id, mode, items));
+                batch_id
+            }
             PrefetchedBatch::Ready(outcome) => {
                 send_worker_outcome(
                     comm,
@@ -927,7 +907,7 @@ where
                     &mut local_key,
                     &mut local_error,
                 )?;
-                continue;
+                continue 'idle;
             }
             PrefetchedBatch::Stop => {
                 send_empty(comm, root, MessageKind::Drain, 0)?;
@@ -935,10 +915,8 @@ where
             }
         };
 
-        let (sender, mut receiver) = mpsc::sync_channel(1);
-        spawn_worker_batch::<T, U, E, F>(scope, mode, batch_id, item_count, items, &f, sender);
-
         loop {
+            // Overlap the next blocking transfer with the resident batch.
             if send_empty(comm, root, MessageKind::Ready, 0).is_err() {
                 mpi_call!(comm.abort(75));
             }
@@ -946,45 +924,24 @@ where
                 Ok(next) => next,
                 Err(_) => mpi_call!(comm.abort(75)),
             };
-            let outcome = match receiver.recv() {
-                Ok(outcome) => outcome,
-                Err(_) => mpi_call!(comm.abort(71)),
+            let outcome = match sink.wait(current) {
+                Some(outcome) => outcome,
+                None => mpi_call!(comm.abort(71)),
             };
-
-            let next = match next {
-                PrefetchedBatch::Work {
-                    batch_id,
-                    item_count,
-                    items,
-                } => {
-                    let (sender, receiver) = mpsc::sync_channel(1);
-                    spawn_worker_batch::<T, U, E, F>(
-                        scope, mode, batch_id, item_count, items, &f, sender,
-                    );
-                    NextWorkerBatch::Running(receiver)
-                }
-                PrefetchedBatch::Ready(outcome) => NextWorkerBatch::Ready(outcome),
-                PrefetchedBatch::Stop => NextWorkerBatch::Stop,
-            };
-
-            if send_worker_outcome(
-                comm,
-                root,
-                rank,
-                size,
-                outcome,
-                &mut local_key,
-                &mut local_error,
-            )
-            .is_err()
-            {
-                mpi_call!(comm.abort(75));
+            // A panicking callback aborts before the prefetched batch is handed
+            // to the lanes or executed inline, so a hung peer callback can never
+            // delay the abort.
+            if matches!(outcome.result, LocalBatchResult::Panic) {
+                mpi_call!(comm.abort(71));
             }
 
             match next {
-                NextWorkerBatch::Running(next_receiver) => receiver = next_receiver,
-                NextWorkerBatch::Ready(outcome) => {
-                    send_worker_outcome(
+                PrefetchedBatch::Work { batch_id, items } => {
+                    // The resident batch has completed, so the lanes can start
+                    // the prefetched batch while this result is transferred.
+                    sink.submit(LocalBatch::new(batch_id, mode, items));
+                    current = batch_id;
+                    if send_worker_outcome(
                         comm,
                         root,
                         rank,
@@ -992,38 +949,113 @@ where
                         outcome,
                         &mut local_key,
                         &mut local_error,
+                    )
+                    .is_err()
+                    {
+                        mpi_call!(comm.abort(75));
+                    }
+                }
+                PrefetchedBatch::Ready(next_outcome) => {
+                    if send_worker_outcome(
+                        comm,
+                        root,
+                        rank,
+                        size,
+                        outcome,
+                        &mut local_key,
+                        &mut local_error,
+                    )
+                    .is_err()
+                    {
+                        mpi_call!(comm.abort(75));
+                    }
+                    send_worker_outcome(
+                        comm,
+                        root,
+                        rank,
+                        size,
+                        next_outcome,
+                        &mut local_key,
+                        &mut local_error,
                     )?;
                     continue 'idle;
                 }
-                NextWorkerBatch::Stop => {
+                PrefetchedBatch::Stop => {
+                    if send_worker_outcome(
+                        comm,
+                        root,
+                        rank,
+                        size,
+                        outcome,
+                        &mut local_key,
+                        &mut local_error,
+                    )
+                    .is_err()
+                    {
+                        mpi_call!(comm.abort(75));
+                    }
                     send_empty(comm, root, MessageKind::Drain, 0)?;
                     return Ok((local_key, local_error));
                 }
             }
         }
-    })
+    }
 }
 
+/// Runs the hybrid worker protocol with a caller-thread coordinator.
+///
+/// The lanes execute local batches while the calling thread keeps MPI progress.
+/// An executor that rejects a concurrent coordinator run (a one-lane backend)
+/// falls back explicitly to executing each batch on the coordinator thread
+/// through [`Lanes::run`] between MPI progress steps.
 #[cfg(feature = "rayon")]
-fn hybrid_worker_loop<C, T, U, E, F>(
+fn hybrid_worker_loop<L, C, T, U, E, F>(
     comm: &C,
     root: i32,
     mode: LocalMode,
     prefetch: bool,
-    pool: &rayon::ThreadPool,
-    f: F,
+    lanes: &mut L,
+    f: &F,
 ) -> Result<(i64, Option<LocalError>), PmapError>
 where
+    L: Lanes,
     C: Communicator,
     T: Serialize + DeserializeOwned + Send,
     U: Serialize + DeserializeOwned + Send,
     E: Display + Send,
-    F: Fn(T) -> Result<U, E> + Send + Sync,
+    F: Fn(T, &mut L::Lane<'_>) -> Result<U, E> + Sync,
 {
-    if prefetch {
-        hybrid_worker_loop_prefetch(comm, root, mode, pool, f)
-    } else {
-        hybrid_worker_loop_no_prefetch(comm, root, mode, pool, f)
+    let queue = LocalQueue::<T, U>::new();
+    let concurrent = lanes.run_with_coordinator(
+        |control| {
+            let mut sink = ConcurrentSink {
+                queue: &queue,
+                control,
+            };
+            hybrid_worker_protocol(comm, root, mode, prefetch, &mut sink)
+        },
+        // A lane callback returns only infrastructure failures; item and batch
+        // failures travel through the queue as data.
+        |_index, lane, control| {
+            run_lane(&queue, f, control, lane);
+            Ok::<(), PmapError>(())
+        },
+    );
+    match concurrent {
+        Ok(outcome) => Ok(outcome),
+        Err(LanesError::SingleLane) => {
+            let mut sink = InlineSink {
+                run_batch: |batch| run_batch_inline(lanes, f, batch),
+                outcome: None,
+            };
+            hybrid_worker_protocol(comm, root, mode, prefetch, &mut sink)
+        }
+        Err(LanesError::Coordinator(error)) => Err(error),
+        Err(LanesError::Executor(error)) => Err(lane_executor_failure(error)),
+        Err(LanesError::Reentrant) => Err(lane_executor_failure(
+            "executor cannot run a coordinator from one of its own workers",
+        )),
+        Err(LanesError::Lane(error)) => Err(error),
     }
 }
 
@@ -1313,20 +1345,22 @@ where
     Ok((results, local_key, local_error))
 }
 
+/// The root-side MPI protocol, generic over how local batches execute.
+///
+/// This is the shared root loop: the coordinator on the calling thread keeps
+/// scheduler and MPI progress while root-local batches execute on the lanes.
 #[cfg(feature = "rayon")]
-fn hybrid_root_loop<C, T, U, E, F>(
+fn hybrid_root_protocol<C, S, T, U>(
     comm: &C,
     options: &PmapOptions,
     root_items: Vec<T>,
-    pool: &rayon::ThreadPool,
-    f: &F,
+    sink: &mut S,
 ) -> Result<RootOutcome<U>, PmapError>
 where
     C: Communicator,
+    S: BatchSink<T, U>,
     T: Serialize + DeserializeOwned + Send,
     U: Serialize + DeserializeOwned + Send,
-    E: Display + Send,
-    F: Fn(T) -> Result<U, E> + Send + Sync,
 {
     let root = options.root;
     let rank = mpi_call!(comm.rank());
@@ -1343,99 +1377,317 @@ where
     .map_err(scheduler_error)?;
     let mut local_key = ErrorKey::NO_ERROR_KEY;
     let mut local_error = None;
+    let mut running: Option<u64> = None;
+    let mut pending_local: Option<LocalBatchOutcome<U>> = None;
+    let mut prefer_local = true;
 
-    pool.in_place_scope(|scope| {
-        let mut receiver: Option<Receiver<LocalBatchOutcome<U>>> = None;
-        let mut pending_local: Option<LocalBatchOutcome<U>> = None;
-        let mut prefer_local = true;
-
-        loop {
-            if receiver.is_none() {
-                receiver =
-                    spawn_root_batch::<T, U, E, F>(scope, &mut scheduler, options.local_mode, f)?;
-            }
-            if receiver.is_none() && scheduler.is_finished() && scheduler.is_quiescent() {
-                break;
-            }
-
-            let mut local_disconnected = false;
-            if pending_local.is_none() {
-                if let Some(local) = receiver.as_ref() {
-                    match local.try_recv() {
-                        Ok(outcome) => pending_local = Some(outcome),
-                        Err(TryRecvError::Empty) => {}
-                        Err(TryRecvError::Disconnected) => local_disconnected = true,
-                    }
-                }
-            }
-            let remote_source = if size > 1 {
-                mpi_call!(comm.any_process().immediate_probe_with_tag(HEADER_TAG))
-                    .map(|status| status.source_rank())
-            } else {
-                None
-            };
-            let local_ready = pending_local.is_some() || local_disconnected;
-            let (event, next_preference) =
-                choose_root_event(local_ready, remote_source.is_some(), prefer_local);
-            prefer_local = next_preference;
-
-            match event {
-                RootEvent::Local => {
-                    if local_disconnected {
-                        mpi_call!(comm.abort(70));
-                    }
-                    let outcome = pending_local
-                        .take()
-                        .ok_or_else(|| protocol_error("missing root-local outcome"))?;
-                    receiver = None;
-                    match outcome.result {
-                        LocalBatchResult::Values(values) => {
-                            scheduler
-                                .on_root_success(outcome.batch_id, values)
-                                .map_err(scheduler_error)?;
-                        }
-                        LocalBatchResult::Error(failure) => {
-                            let key = error_key(failure.index, ErrorClass::Callback, rank, size)?;
-                            local_key = local_key.min(key);
-                            local_error = Some((PmapErrorKind::User, failure.message.clone()));
-                            scheduler
-                                .on_root_error(outcome.batch_id)
-                                .map_err(scheduler_error)?;
-                        }
-                        LocalBatchResult::Panic => mpi_call!(comm.abort(70)),
-                    }
-                }
-                RootEvent::Remote => {
-                    let source = remote_source
-                        .ok_or_else(|| protocol_error("missing probed remote source"))?;
-                    let value = receive_header(comm, source)?;
-                    process_remote_header(
-                        comm,
-                        &mut scheduler,
-                        source,
-                        value,
-                        &mut RootErrorState {
-                            call_task_key,
-                            rank,
-                            size,
-                            local_key: &mut local_key,
-                            local_error: &mut local_error,
-                        },
-                    )?;
-                }
-                RootEvent::Neither => std::thread::yield_now(),
+    loop {
+        if sink.cancelled() {
+            // A lane infrastructure failure is unrecoverable on this rank.
+            mpi_call!(comm.abort(70));
+        }
+        if running.is_none() {
+            if let Some(batch) = scheduler.next_root_batch().map_err(scheduler_error)? {
+                let batch_id = batch.id().get();
+                let items = batch
+                    .into_items()
+                    .into_iter()
+                    .map(|item| (item.original_index(), item.into_value()))
+                    .collect();
+                sink.submit(LocalBatch::new(batch_id, options.local_mode, items));
+                running = Some(batch_id);
             }
         }
-
-        let results = if scheduler.failed() {
-            Vec::new()
+        if running.is_none() && scheduler.is_finished() && scheduler.is_quiescent() {
+            break;
+        }
+        if pending_local.is_none() {
+            if let Some(batch_id) = running {
+                pending_local = sink.try_wait(batch_id);
+            }
+        }
+        let remote_source = if size > 1 {
+            mpi_call!(comm.any_process().immediate_probe_with_tag(HEADER_TAG))
+                .map(|status| status.source_rank())
         } else {
-            scheduler.into_results().map_err(scheduler_error)?
+            None
         };
-        Ok((results, local_key, local_error))
-    })
+        let (event, next_preference) = choose_root_event(
+            pending_local.is_some(),
+            remote_source.is_some(),
+            prefer_local,
+        );
+        prefer_local = next_preference;
+
+        match event {
+            RootEvent::Local => {
+                let outcome = pending_local
+                    .take()
+                    .ok_or_else(|| protocol_error("missing root-local outcome"))?;
+                running = None;
+                let batch_id = BatchId::from_raw(outcome.batch_id);
+                match outcome.result {
+                    LocalBatchResult::Values(values) => {
+                        let results = values
+                            .into_iter()
+                            .map(|(index, value)| ItemResult::new(index, value))
+                            .collect();
+                        scheduler
+                            .on_root_success(batch_id, results)
+                            .map_err(scheduler_error)?;
+                    }
+                    LocalBatchResult::CallbackError { index, message } => {
+                        let key = error_key(index, ErrorClass::Callback, rank, size)?;
+                        local_key = local_key.min(key);
+                        local_error = Some((PmapErrorKind::User, message));
+                        scheduler.on_root_error(batch_id).map_err(scheduler_error)?;
+                    }
+                    LocalBatchResult::WireError { .. } => {
+                        return Err(protocol_error("root lane produced a wire error"))
+                    }
+                    LocalBatchResult::Panic => mpi_call!(comm.abort(70)),
+                }
+            }
+            RootEvent::Remote => {
+                let source =
+                    remote_source.ok_or_else(|| protocol_error("missing probed remote source"))?;
+                let value = receive_header(comm, source)?;
+                process_remote_header(
+                    comm,
+                    &mut scheduler,
+                    source,
+                    value,
+                    &mut RootErrorState {
+                        call_task_key,
+                        rank,
+                        size,
+                        local_key: &mut local_key,
+                        local_error: &mut local_error,
+                    },
+                )?;
+            }
+            RootEvent::Neither => std::thread::yield_now(),
+        }
+    }
+
+    let results = if scheduler.failed() {
+        Vec::new()
+    } else {
+        scheduler.into_results().map_err(scheduler_error)?
+    };
+    Ok((results, local_key, local_error))
 }
 
+/// Runs the hybrid root protocol with a caller-thread coordinator.
+///
+/// See [`hybrid_worker_loop`] for the one-lane fallback rule.
+#[cfg(feature = "rayon")]
+fn hybrid_root_loop<L, C, T, U, E, F>(
+    comm: &C,
+    options: &PmapOptions,
+    root_items: Vec<T>,
+    lanes: &mut L,
+    f: &F,
+) -> Result<RootOutcome<U>, PmapError>
+where
+    L: Lanes,
+    C: Communicator,
+    T: Serialize + DeserializeOwned + Send,
+    U: Serialize + DeserializeOwned + Send,
+    E: Display + Send,
+    F: Fn(T, &mut L::Lane<'_>) -> Result<U, E> + Sync,
+{
+    let queue = LocalQueue::<T, U>::new();
+    let mut root_input = Some(root_items);
+    let concurrent = lanes.run_with_coordinator(
+        |control| {
+            let mut sink = ConcurrentSink {
+                queue: &queue,
+                control,
+            };
+            hybrid_root_protocol(
+                comm,
+                options,
+                root_input.take().expect("root input is passed once"),
+                &mut sink,
+            )
+        },
+        // A lane callback returns only infrastructure failures; item and batch
+        // failures travel through the queue as data.
+        |_index, lane, control| {
+            run_lane(&queue, f, control, lane);
+            Ok::<(), PmapError>(())
+        },
+    );
+    match concurrent {
+        Ok(outcome) => Ok(outcome),
+        Err(LanesError::SingleLane) => {
+            let mut sink = InlineSink {
+                run_batch: |batch| run_batch_inline(lanes, f, batch),
+                outcome: None,
+            };
+            hybrid_root_protocol(
+                comm,
+                options,
+                root_input.take().expect("root input is passed once"),
+                &mut sink,
+            )
+        }
+        Err(LanesError::Coordinator(error)) => Err(error),
+        Err(LanesError::Executor(error)) => Err(lane_executor_failure(error)),
+        Err(LanesError::Reentrant) => Err(lane_executor_failure(
+            "executor cannot run a coordinator from one of its own workers",
+        )),
+        Err(LanesError::Lane(error)) => Err(error),
+    }
+}
+
+/// Runs one hybrid `pmap` call on an already duplicated private communicator.
+#[cfg(feature = "rayon")]
+fn run_collective<L, C, T, U, E, F>(
+    comm: &C,
+    lanes: &mut L,
+    options: &PmapOptions,
+    root_items: Option<Vec<T>>,
+    f: &F,
+) -> Result<Option<Vec<U>>, PmapError>
+where
+    L: Lanes,
+    C: Communicator,
+    T: Serialize + DeserializeOwned + Send,
+    U: Serialize + DeserializeOwned + Send,
+    E: Display + Send,
+    F: Fn(T, &mut L::Lane<'_>) -> Result<U, E> + Sync,
+{
+    let rank = mpi_call!(comm.rank());
+    let outcome = if rank == options.root {
+        hybrid_root_loop(
+            comm,
+            options,
+            root_items.expect("successful preflight guarantees root input"),
+            lanes,
+            f,
+        )
+    } else {
+        hybrid_worker_loop(
+            comm,
+            options.root,
+            options.local_mode,
+            options.prefetch,
+            lanes,
+            f,
+        )
+        .map(|(key, error)| (Vec::new(), key, error))
+    };
+    let (results, local_key, local_error) = match outcome {
+        Ok(outcome) => outcome,
+        Err(_) => mpi_call!(comm.abort(72)),
+    };
+
+    let selected = convergence(comm, local_key);
+    let error = match broadcast_error(comm, selected, local_key, local_error) {
+        Ok(error) => error,
+        Err(_) => mpi_call!(comm.abort(73)),
+    };
+    match error {
+        Some((kind, message)) => Err(PmapError::keyed(kind, selected, message)),
+        None if rank == options.root => Ok(Some(results)),
+        None => Ok(None),
+    }
+}
+
+/// Dynamically maps root-owned items across MPI ranks and caller-supplied lanes
+/// for each rank's local batches.
+///
+/// Every rank must call this collective in the same order with identical
+/// options. Only `options.root` supplies items and receives ordered results.
+/// The call must originate on the MPI initialization/main thread, and MPI must
+/// provide `MPI_THREAD_FUNNELED` or stronger, because the coordinator keeps MPI
+/// progress on that thread while the lanes compute. Do not enter it from a
+/// worker of the executor's own pool.
+///
+/// The coordinator is the protocol loop on the calling thread: it dispatches
+/// scheduler batches, keeps MPI progress, and applies the root's immediate abort
+/// rules before anything is joined. Lanes execute the local batches with the
+/// requested [`LocalMode`]: `Outer` spreads a batch over the lanes, while
+/// `Sequential` and `Inner` hand the batch to one lane. When
+/// [`PmapOptions::prefetch`] is true, each remote domain may hold one additional
+/// batch so blocking task/result transfer overlaps adjacent batch execution; the
+/// root domain remains capacity one.
+///
+/// The per-item callback receives the lane resource of the lane that runs the
+/// item (`&mut L::Lane<'_>`), so a backend adapter can hand its own per-worker
+/// context, such as a tenferro child session, to the callback. [`pmap`] adapts
+/// the ordinary `Fn(T)` shape to `RayonLanes`' unit lane.
+///
+/// A lanes executor that reports [`LanesError::SingleLane`] falls back
+/// explicitly to executing each batch on the coordinator thread through
+/// [`Lanes::run`] between MPI progress steps. This is the documented one-lane
+/// path; it never happens silently and never runs work twice.
+///
+/// # Errors
+///
+/// Returns [`PmapErrorKind::Preflight`] when the collective preconditions fail
+/// (including entry from a Rayon worker), [`PmapErrorKind::User`] with a
+/// converged error key when a callback fails, [`PmapErrorKind::Wire`] or
+/// [`PmapErrorKind::Protocol`] for transport, protocol, or lane-executor
+/// failures, and [`PmapErrorKind::Reentrant`] when `pmap` is already active on
+/// this thread.
+#[cfg(feature = "rayon")]
+pub fn pmap_lanes<L, C, T, U, E, F>(
+    world: &C,
+    lanes: &mut L,
+    options: PmapOptions,
+    root_items: Option<Vec<T>>,
+    f: F,
+) -> Result<Option<Vec<U>>, PmapError>
+where
+    L: Lanes,
+    C: Communicator,
+    T: Serialize + DeserializeOwned + Send,
+    U: Serialize + DeserializeOwned + Send,
+    E: Display + Send,
+    F: Fn(T, &mut L::Lane<'_>) -> Result<U, E> + Sync,
+{
+    if in_rayon_worker_context() {
+        return Err(PmapError::new(
+            PmapErrorKind::Preflight,
+            "hybrid pmap cannot enter from a Rayon worker",
+        ));
+    }
+    execute(world, Some(lanes), options, root_items, &f)
+}
+
+/// Runs one hybrid collective call on an already built lane executor.
+///
+/// A missing or lane-less executor is folded into collective preflight instead
+/// of returning locally, so peers are never stranded.
+#[cfg(feature = "rayon")]
+fn execute<L, C, T, U, E, F>(
+    world: &C,
+    lanes: Option<&mut L>,
+    options: PmapOptions,
+    root_items: Option<Vec<T>>,
+    f: &F,
+) -> Result<Option<Vec<U>>, PmapError>
+where
+    L: Lanes,
+    C: Communicator,
+    T: Serialize + DeserializeOwned + Send,
+    U: Serialize + DeserializeOwned + Send,
+    E: Display + Send,
+    F: Fn(T, &mut L::Lane<'_>) -> Result<U, E> + Sync,
+{
+    let _active = Active::acquire()?;
+    let executor_valid = lanes.as_ref().is_some_and(|lanes| lanes.lane_count() > 0);
+    let execution_valid = executor_valid
+        && mpi_call!(mpi_backend::environment::threading_support())
+            >= mpi_backend::environment::Threading::Funneled;
+    let comm = mpi_call!(world.duplicate());
+    preflight(&comm, &options, root_items.as_ref(), execution_valid)?;
+    let lanes = lanes.expect("successful preflight guarantees a lane executor");
+    run_collective(&comm, lanes, &options, root_items, f)
+}
 impl PmapErrorKind {
     fn code(self) -> i32 {
         match self {
@@ -1532,10 +1784,22 @@ where
 /// Rayon worker, and MPI must provide `MPI_THREAD_FUNNELED` or stronger.
 /// Callback state may borrow non-`'static` data while satisfying the stated
 /// Rayon `Send`/`Sync` bounds; values retain the serialization bounds required
-/// by remote execution. All MPI calls remain on the calling thread. When
-/// [`PmapOptions::prefetch`] is true, each remote domain may hold one additional
-/// batch so blocking task/result transfer overlaps adjacent callback execution;
-/// the root domain remains capacity one.
+/// by remote execution.
+///
+/// Local execution is [`pmap_lanes`] with [`RayonLanes`]: the coordinator keeps MPI progress on the calling thread
+/// while lanes execute local batches, so when [`PmapOptions::prefetch`] is true
+/// each remote domain may hold one additional batch and blocking task/result
+/// transfer overlaps adjacent batch execution. The root domain remains capacity
+/// one, and all MPI calls remain on the calling thread.
+///
+/// # Errors
+///
+/// Returns [`PmapErrorKind::Preflight`] when a rank lacks a pooled, admitted
+/// domain, enters from a Rayon worker, or disagrees about options;
+/// [`PmapErrorKind::User`] with a converged error key when a callback fails;
+/// [`PmapErrorKind::Wire`] or [`PmapErrorKind::Protocol`] for transport or
+/// protocol failures; and [`PmapErrorKind::Reentrant`] when `pmap` is already
+/// active on this thread.
 #[cfg(feature = "rayon")]
 pub fn pmap<C, T, U, E, F>(
     world: &C,
@@ -1557,55 +1821,17 @@ where
             "hybrid pmap cannot enter from a Rayon worker",
         ));
     }
-    let _active = Active::acquire()?;
-    let admission = domain.try_admit();
-    let pool = domain.rayon_pool().cloned();
-    let execution_valid = admission.is_ok()
-        && pool.is_some()
-        && domain.id().get() == 0
-        && rayon::current_thread_index().is_none()
-        && mpi_call!(mpi_backend::environment::threading_support())
-            >= mpi_backend::environment::Threading::Funneled;
-    let comm = mpi_call!(world.duplicate());
-    preflight(&comm, &options, root_items.as_ref(), execution_valid)?;
-    let _admission = admission.expect("successful preflight guarantees domain admission");
-    let pool = pool.expect("successful preflight guarantees a Rayon pool");
-
-    let rank = mpi_call!(comm.rank());
-    let outcome = if rank == options.root {
-        hybrid_root_loop::<_, T, U, E, F>(
-            &comm,
-            &options,
-            root_items.expect("successful preflight guarantees root input"),
-            pool.as_ref(),
-            &f,
-        )
-    } else {
-        hybrid_worker_loop(
-            &comm,
-            options.root,
-            options.local_mode,
-            options.prefetch,
-            pool.as_ref(),
-            f,
-        )
-        .map(|(key, error)| (Vec::new(), key, error))
-    };
-    let (results, local_key, local_error) = match outcome {
-        Ok(outcome) => outcome,
-        Err(_) => mpi_call!(comm.abort(72)),
-    };
-
-    let selected = convergence(&comm, local_key);
-    let error = match broadcast_error(&comm, selected, local_key, local_error) {
-        Ok(error) => error,
-        Err(_) => mpi_call!(comm.abort(73)),
-    };
-    match error {
-        Some((kind, message)) => Err(PmapError::keyed(kind, selected, message)),
-        None if rank == options.root => Ok(Some(results)),
-        None => Ok(None),
-    }
+    // Building the executor admits the domain. A construction failure is a
+    // collective preflight failure, never a local early return that would
+    // strand peers.
+    let mut lanes = RayonLanes::new(domain).ok();
+    execute(
+        world,
+        lanes.as_mut(),
+        options,
+        root_items,
+        &|item: T, _lane: &mut ()| f(item),
+    )
 }
 
 #[cfg(all(test, not(feature = "rayon")))]
@@ -1792,18 +2018,6 @@ mod tests {
                 super::RootEvent::Remote
             ]
         );
-    }
-
-    #[test]
-    fn disconnected_local_sender_is_selected_for_abort() {
-        let (sender, receiver) = std::sync::mpsc::sync_channel::<()>(1);
-        drop(sender);
-        assert!(matches!(
-            receiver.try_recv(),
-            Err(std::sync::mpsc::TryRecvError::Disconnected)
-        ));
-        let (event, _) = super::choose_root_event(true, false, false);
-        assert_eq!(event, super::RootEvent::Local);
     }
 
     #[test]

@@ -23,18 +23,21 @@ This phase does not add arbitrary prefetch depth, adaptive policy, a progress th
 
 ## Minimal mechanism
 
-P1 does not require nonblocking MPI requests. On a remote hybrid rank,
-`ThreadPool::in_place_scope` keeps the scope body and every MPI call on the MPI
-initialization thread. Borrowed callback jobs are spawned into the explicit
-pool and report through a rank-local capacity-one outcome channel; the scope
-joins them before return or unwind. This replaces the P0 worker's synchronous
-`pool.install` call and does not add `'static` bounds.
+P1 does not require nonblocking MPI requests. On a remote hybrid rank, the
+protocol loop runs as the coordinator of `Lanes::run_with_coordinator`
+(`src/pmap.rs`, `src/lanes.rs`): the coordinator body and every MPI call stay on
+the MPI initialization thread, while local batches execute on that domain's
+lanes. `RayonLanes` drives the lanes through `ThreadPool::in_place_scope` plus
+`Scope::spawn_broadcast` and joins them before return or unwind, so the scoped
+callbacks may still borrow the caller frame and need no `'static` bound. The
+resident batch and the prefetched batch exchange work and outcomes through one
+bounded local batch queue instead of a spawned job per batch.
 
-The scope body:
+The coordinator body:
 
 1. receives the current batch;
-2. spawns its callback into the explicit Rayon pool;
-3. sends `READY` while that callback runs;
+2. submits it to the domain's lanes;
+3. sends `READY` while that batch runs;
 4. receives either one prefetched `TASK` or `STOP`;
 5. after current completion, starts the prefetched callback before sending the current `RESULT`;
 6. repeats, or sends `DRAIN` after the final result when `STOP` was received.

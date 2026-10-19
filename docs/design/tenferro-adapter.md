@@ -196,3 +196,17 @@ The implementation must leave one checked entry point that proves:
 MPI transport and tensor serialization are unchanged. Phase 20b owns explicit
 tensor4all contexts and logical tensor reconstruction after
 `tensor4all-rs#663`; Phase 20c owns the three-repository MPI integration gate.
+
+## 7. Follow-up: lanes instead of the external-domain chain
+
+This document records the implemented Phase 20a state, which is pinned to a
+tenferro revision that still accepts a caller-managed external domain. Upstream
+tenferro-rs #2004 removed borrowing an external pool, so a follow-up rewrite
+keeps tenferro as the sole owner of its pool and admission and binds the two
+layers through the core lanes contract instead (`docs/design.md` §6.1,
+[`tenferro-rs#2201`](https://github.com/tensor4all/tenferro-rs/issues/2201)):
+Hataori schedules items onto tenferro phase lanes (`CpuPhase::run` /
+`run_with_coordinator`), and the adapter maps tenferro's `PhaseControl` into
+Hataori's `LaneControl`. `LocalMode::Outer` then becomes a supported mode
+because each lane carries its own owner-inheriting child session. Nothing in
+this section is implemented in the adapter yet.

@@ -25,7 +25,12 @@ design document with a one-line description, so each is one fetch away.
 ## Development status
 
 The public `hataori` crate implements the synchronous P0/P1 `map`, `map_in`,
-collective `pmap`, and placement helpers. The unpublished
+collective `pmap`, and placement helpers. Local fan-out runs through one
+execution-lanes abstraction (`Lanes`, `map_in_lanes`, `pmap_lanes`): a
+coordinator on the calling thread keeps MPI/scheduler progress while per-worker
+lanes execute local batches. `RayonLanes` is the Rayon implementation over an
+admitted `Domain` pool, and a backend adapter can supply its own lanes without
+adding a second pool or scheduler. The unpublished
 `hataori-runtime-foundation` workspace crate implements Issue #14 Phase A:
 transport-independent protocol/framing, deterministic memory faults, bounded
 TCP rendezvous/transport, and MPI transport with segmented payloads. The

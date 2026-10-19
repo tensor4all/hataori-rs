@@ -1,6 +1,8 @@
 use super::mpi_api::collective::SystemOperation;
 use super::mpi_api::traits::*;
-use hataori::{pmap, Domain, LocalMode, PmapErrorKind, PmapOptions};
+use hataori::{
+    pmap, pmap_lanes, Domain, LaneControl, Lanes, LanesError, LocalMode, PmapErrorKind, PmapOptions,
+};
 use rayon::ThreadPoolBuilder;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::num::NonZeroUsize;
@@ -84,6 +86,45 @@ impl Serialize for AbortSerializeValue {
             ));
         }
         (&self.value, &self.wait_before_failure).serialize(serializer)
+    }
+}
+
+/// The lane resource a fallback callback receives: created by the executor on
+/// the lane's own thread, so the callback proves the lane reached it.
+struct FallbackLane {
+    index: usize,
+    calls: usize,
+}
+
+/// A one-lane executor that cannot overlap a coordinator with its lane.
+///
+/// It is the tenferro-style inline case: `run_with_coordinator` reports the
+/// typed single-lane rejection and `run` executes the lane on the calling thread.
+struct CoordinatorThreadLanes;
+
+impl Lanes for CoordinatorThreadLanes {
+    type Lane<'l> = FallbackLane;
+    type Error = std::convert::Infallible;
+
+    fn lane_count(&self) -> usize {
+        1
+    }
+
+    fn run<E: Send>(
+        &mut self,
+        lane: impl Fn(usize, &mut FallbackLane, &LaneControl<'_>) -> Result<(), E> + Sync,
+    ) -> Result<(), LanesError<E, Self::Error>> {
+        let control = LaneControl::new();
+        let mut state = FallbackLane { index: 0, calls: 0 };
+        lane(0, &mut state, &control).map_err(LanesError::Lane)
+    }
+
+    fn run_with_coordinator<C, E: Send>(
+        &mut self,
+        _coordinator: impl FnOnce(&LaneControl<'_>) -> Result<C, E>,
+        _lane: impl Fn(usize, &mut FallbackLane, &LaneControl<'_>) -> Result<(), E> + Sync,
+    ) -> Result<C, LanesError<E, Self::Error>> {
+        Err(LanesError::SingleLane)
     }
 }
 
@@ -172,50 +213,149 @@ pub fn run<C: Communicator>(world: &C) {
         panic!("prefetched result serialization failure did not abort the MPI job");
     }
 
-    for mode in [LocalMode::Sequential, LocalMode::Outer, LocalMode::Inner] {
+    // Worker-count x LocalMode x prefetch matrix: the lane executor must behave
+    // identically for one and two workers, in every mode, with and without
+    // prefetch.
+    for worker_count in [1_usize, 2] {
+        let matrix_pool = Arc::new(
+            ThreadPoolBuilder::new()
+                .num_threads(worker_count)
+                .build()
+                .unwrap(),
+        );
+        let cpus = (0..worker_count).collect::<Vec<usize>>();
+        let matrix_domain = Domain::external(Arc::clone(&matrix_pool), cpus, worker_count).unwrap();
+        for mode in [LocalMode::Sequential, LocalMode::Outer, LocalMode::Inner] {
+            for prefetch in [false, true] {
+                let calls = AtomicUsize::new(0);
+                let root_participated = AtomicBool::new(false);
+                let callback_pool = Arc::clone(&matrix_pool);
+                let input = (rank == 0).then(|| (0..16).collect::<Vec<i32>>());
+                let result = pmap(
+                    world,
+                    &matrix_domain,
+                    PmapOptions {
+                        root: 0,
+                        batch_size: NonZeroUsize::new(3).unwrap(),
+                        local_mode: mode,
+                        prefetch,
+                    },
+                    input,
+                    |item| {
+                        assert!(callback_pool.current_thread_index().is_some());
+                        calls.fetch_add(1, Ordering::Relaxed);
+                        if rank == 0 && item == 0 {
+                            root_participated.store(true, Ordering::Relaxed);
+                        }
+                        if mode == LocalMode::Inner {
+                            // Nested same-pool work, including a broadcast that
+                            // needs every worker, must complete while the idle
+                            // lanes wait for their next batch.
+                            let visited = AtomicUsize::new(0);
+                            callback_pool.broadcast(|_| {
+                                visited.fetch_add(1, Ordering::SeqCst);
+                            });
+                            assert_eq!(visited.load(Ordering::SeqCst), worker_count);
+                            let (left, right) = rayon::join(|| item, || item + 1);
+                            assert_eq!(left + 1, right);
+                        }
+                        Ok::<_, String>(item + bias)
+                    },
+                )
+                .unwrap();
+                let local_calls = calls.load(Ordering::Relaxed) as i64;
+                let mut total_calls = 0_i64;
+                world.all_reduce_into(&local_calls, &mut total_calls, SystemOperation::sum());
+                assert_eq!(total_calls, 16);
+                if rank == 0 {
+                    assert_eq!(
+                        result.unwrap(),
+                        (0..16).map(|item| item + bias).collect::<Vec<_>>()
+                    );
+                    assert!(root_participated.load(Ordering::Relaxed));
+                } else {
+                    assert!(result.is_none());
+                }
+            }
+        }
+    }
+
+    if std::env::var_os("HATAORI_SINGLE_LANE_PREFETCH_PANIC").is_some() {
+        assert_eq!(world.size(), 2);
+        // The single-lane fallback executes batches on the coordinator thread, so
+        // a panicking current batch must abort before the prefetched batch is
+        // executed. Every remote callback after the first one sleeps, so a wrong
+        // ordering is caught by this stage's watchdog instead of finishing.
+        let mut lanes = CoordinatorThreadLanes;
         let calls = AtomicUsize::new(0);
-        let root_participated = AtomicBool::new(false);
-        let callback_pool = Arc::clone(&pool);
-        let input = (rank == 0).then(|| (0..16).collect::<Vec<i32>>());
-        let result = pmap(
+        let _ = pmap_lanes(
             world,
-            &domain,
+            &mut lanes,
             PmapOptions {
                 root: 0,
-                batch_size: NonZeroUsize::new(3).unwrap(),
-                local_mode: mode,
-                prefetch: false,
+                batch_size: NonZeroUsize::new(1).unwrap(),
+                local_mode: LocalMode::Sequential,
+                prefetch: true,
             },
-            input,
-            |item| {
-                assert!(callback_pool.current_thread_index().is_some());
-                calls.fetch_add(1, Ordering::Relaxed);
-                if rank == 0 && item == 0 {
-                    root_participated.store(true, Ordering::Relaxed);
+            (rank == 0).then(|| (0..16).collect::<Vec<i32>>()),
+            |item, lane: &mut FallbackLane| {
+                assert_eq!(lane.index, 0);
+                lane.calls += 1;
+                let previous = calls.fetch_add(1, Ordering::Relaxed);
+                if rank != 0 {
+                    if previous == 0 {
+                        panic!("expected single-lane prefetched-batch callback panic");
+                    }
+                    std::thread::sleep(Duration::from_secs(30));
                 }
-                if mode == LocalMode::Inner {
-                    let (_, in_pool) = rayon::join(
-                        || item + bias,
-                        || callback_pool.current_thread_index().is_some(),
+                // A slow root keeps the input queue non-empty while the remote
+                // rank asks for its prefetched batch.
+                std::thread::sleep(Duration::from_millis(20));
+                Ok::<_, String>(item)
+            },
+        );
+        panic!("single-lane prefetch callback panic did not abort the MPI job");
+    }
+
+    if std::env::var_os("HATAORI_SINGLE_LANE_FALLBACK").is_some() {
+        // An executor that reports `SingleLane` must fall back explicitly to
+        // running batches on the coordinator thread, for every mode and both
+        // prefetch settings, without duplicating any work.
+        for mode in [LocalMode::Sequential, LocalMode::Outer, LocalMode::Inner] {
+            for prefetch in [false, true] {
+                let mut lanes = CoordinatorThreadLanes;
+                let calls = AtomicUsize::new(0);
+                let input = (rank == 0).then(|| (0..9).collect::<Vec<i32>>());
+                let result = pmap_lanes(
+                    world,
+                    &mut lanes,
+                    PmapOptions {
+                        root: 0,
+                        batch_size: NonZeroUsize::new(2).unwrap(),
+                        local_mode: mode,
+                        prefetch,
+                    },
+                    input,
+                    |item, lane| {
+                        // The executor's lane resource reaches a pmap callback.
+                        assert_eq!(lane.index, 0);
+                        lane.calls += 1;
+                        calls.fetch_add(1, Ordering::Relaxed);
+                        Ok::<_, String>(item * 3)
+                    },
+                )
+                .unwrap();
+                let local_calls = calls.load(Ordering::Relaxed) as i64;
+                let mut total_calls = 0_i64;
+                world.all_reduce_into(&local_calls, &mut total_calls, SystemOperation::sum());
+                assert_eq!(total_calls, 9);
+                if rank == 0 {
+                    assert_eq!(
+                        result.unwrap(),
+                        (0..9).map(|item| item * 3).collect::<Vec<_>>()
                     );
-                    assert!(in_pool);
                 }
-                Ok::<_, String>(item + bias)
-            },
-        )
-        .unwrap();
-        let local_calls = calls.load(Ordering::Relaxed) as i64;
-        let mut total_calls = 0_i64;
-        world.all_reduce_into(&local_calls, &mut total_calls, SystemOperation::sum());
-        assert_eq!(total_calls, 16);
-        if rank == 0 {
-            assert_eq!(
-                result.unwrap(),
-                (0..16).map(|item| item + bias).collect::<Vec<_>>()
-            );
-            assert!(root_participated.load(Ordering::Relaxed));
-        } else {
-            assert!(result.is_none());
+            }
         }
     }
 

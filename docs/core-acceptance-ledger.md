@@ -51,6 +51,20 @@ Open MPI and runs the same entry point. No prebuilt fixture or secret is used.
 | Same-rank codec count zero | filtered n=1 `size_one_root_paths_bypass_codec` for pmap and all placement helpers, using Serialize-always-error values and zero codec counters |
 | Broadcast/scatter/gather ownership and order | `check-placement.sh`: arbitrary roots, rank shards/order, UTF-8, empty, large values, reuse, encode/decode faults, size-one no-codec and `Rc` non-`Send` values |
 
+## Local lanes executor
+
+| Contract | Evidence |
+|---|---|
+| `map_in_lanes` order, exactly-once, lowest error, panic join | `src/lanes/tests.rs` at fake-lane and Rayon worker counts 1/2/4; `map_in` `Outer` compatibility tests in `src/local.rs` |
+| Lane resource reached per lane, no `Send`/`Sync` executor bound | fake `Lanes` impl with `Rc`-backed lane state, non-`Send` executor, and a coordinator capture/result that stay on one thread |
+| Lane entry, cancellation, and join rules | `RayonLanes::run`/`run_with_coordinator` tests: overlap at one worker, coordinator error and panic, lane error, lane panic, immediate cancel on lane failure, panic-over-error precedence for both entries, same-pool-worker `run` and typed `Reentrant` for `run_with_coordinator`, and admission reuse after each failure |
+| External stop probe for backend-owned cancellation | `LaneControl::with_probe` unit test: a probe view follows the external signal, shares the run's cancellation flag (`cancel` on either view reaches the other), and does not report an external stop as an own-flag cancellation |
+| Idle lanes keep nested pool work moving | hybrid smoke `LocalMode::Inner` matrix at one and two workers asserts a lane-side `pool.broadcast` reaches every worker and `rayon::join` completes; `lanes::tests::batch` covers the queue-level case |
+| Hybrid batches run on lanes for every mode and prefetch setting | `check-hybrid.sh` n=1/2/4 hybrid matrix, `LocalMode` x prefetch at one and two workers |
+| One-lane typed rejection falls back explicitly | `HATAORI_SINGLE_LANE_FALLBACK` stage in `check-hybrid.sh` runs `pmap_lanes` with a `SingleLane` executor in both backends at n=1/2, and the smoke runs it at n=1/2/4 |
+| Single-lane prefetch abort ordering | `HATAORI_SINGLE_LANE_PREFETCH_PANIC` stage: a panicking current batch must reach `MPI_Abort(71)` under a 15 s watchdog without executing the prefetched batch |
+| Panic, prefetch-transfer, and user-error abort semantics unchanged | existing panic `MPI_Abort(70)` and live-prefetch `MPI_Abort(75)` watchdog stages; fault-convergence suite |
+
 ## P1 bounded prefetch
 
 | Acceptance criterion | Evidence |
@@ -62,8 +76,8 @@ Open MPI and runs the same entry point. No prebuilt fixture or secret is used.
 | Ordered exactly-once execution | prefetched 16-item call reduces callback count and checks root order under both backends at n=1/2/4 |
 | Failure, drain, and reuse | n=2 hybrid fixtures cover current+prefetched user errors, current/prefetched input decode failures, deterministic first error, assigned callback count, and successful reuse |
 | Live-job transfer failure abort | subprocess fixture fails result-N serialization after callback N+1 starts and requires prompt init-thread `MPI_Abort(75)` before scoped join |
-| FUNNELED and scoped bounds | all new MPI sites use `mpi_call!`; source scanner and test builds enforce `MPI_Is_thread_main`; the remote worker mirrors the existing `in_place_scope` borrowed-job mechanism |
-| Bounded memory | scheduler state structurally stores one current plus at most one prefetched `RunningMeta`; worker retains at most current outcome plus one next batch/outcome |
+| FUNNELED and scoped bounds | all new MPI sites use `mpi_call!`; source scanner and test builds enforce `MPI_Is_thread_main`; both hybrid roles run their protocol loop as the `Lanes::run_with_coordinator` coordinator, and `RayonLanes` joins its lanes inside `in_place_scope` with borrowed, non-`'static` callbacks |
+| Bounded memory | scheduler state structurally stores one current plus at most one prefetched `RunningMeta`; the local batch queue keeps one resident batch per domain and the coordinator holds at most one prefetched batch plus one outcome |
 
 ## MPI thread boundary
 
