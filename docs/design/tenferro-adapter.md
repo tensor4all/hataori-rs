@@ -19,8 +19,12 @@ transport, and tensor reconstruction stay outside this change.
 
 - local `hataori` with `rayon` enabled (for the `Lanes` contract and
   `pmap_lanes`);
-- `tenferro-cpu` (default features off, `native` = Faer provider) and
-  `tenferro-tensor` at exactly `74aa7fac`;
+- `tenferro-cpu` (default features off, **no provider feature**) and
+  `tenferro-tensor` at exactly `74aa7fac`. tenferro-cpu's CPU providers
+  (`native`, `blas`, `provider-inject`, ...) are mutually exclusive, so the
+  consumer selects one through its own tenferro-cpu dependency and Cargo feature
+  unification; the adapter's tests, doctests and examples enable `native` through
+  a dev-dependency only;
 - an optional `mpi` feature (`hataori/mpi` plus upstream `mpi`) used only by the
   `pmap_lanes` world-size-1 smoke example.
 
