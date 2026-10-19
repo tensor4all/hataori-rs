@@ -1168,6 +1168,9 @@ impl ObjectService {
             })
     }
 
+    // `fetch_update` is deprecated on newer toolchains in favor of `try_update`,
+    // which does not exist at the crate's MSRV (1.85).
+    #[allow(deprecated)]
     pub(crate) fn admit(
         &self,
         action: ActionId,
@@ -1564,6 +1567,9 @@ impl ObjectService {
         }))
     }
 
+    // `fetch_update` is deprecated on newer toolchains in favor of `try_update`,
+    // which does not exist at the crate's MSRV (1.85).
+    #[allow(deprecated)]
     fn insert(
         &self,
         envelope: ObjectEnvelope,
@@ -1677,6 +1683,9 @@ impl ObjectService {
         resolver.1.clear();
     }
 
+    // `fetch_update` is deprecated on newer toolchains in favor of `try_update`,
+    // which does not exist at the crate's MSRV (1.85).
+    #[allow(deprecated)]
     pub(crate) fn begin_transfer(
         &self,
         object: ObjectId,

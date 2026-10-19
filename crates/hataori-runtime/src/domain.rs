@@ -186,6 +186,9 @@ impl DomainRegistry {
         })
     }
 
+    // `fetch_update` is deprecated on newer toolchains in favor of `try_update`,
+    // which does not exist at the crate's MSRV (1.85).
+    #[allow(deprecated)]
     pub(crate) fn submit(&self, job: ActionJob) -> Result<(), RuntimeError> {
         let domain = self
             .domains
