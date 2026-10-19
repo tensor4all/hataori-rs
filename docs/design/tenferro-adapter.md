@@ -1,212 +1,203 @@
-# Phase 20a: tenferro adapter
+# tenferro adapter: lanes over a held session
 
-**Status:** Implemented (commit `c2cb8fb`, PR #2); this document records the design as reviewed.
+**Status:** Implemented (hataori-rs#24). This document supersedes the Phase 20a
+external-domain design, which tenferro-rs no longer supports.
 
-**Scope:** A tenferro-only adapter over Hataori's existing whole-domain `Inner`
-execution contract. tensor4all contexts, tensor transport, and tensor
-reconstruction remain Phase 20b and are not part of this change.
+**Upstream contract:** tenferro-rs
+[#2004](https://github.com/tensor4all/tenferro-rs/pull/2004) decision D9 (tenferro
+never borrows a caller pool) and
+[#2202](https://github.com/tensor4all/tenferro-rs/pull/2202) (phase with a
+caller-thread coordinator), merge commit
+`74aa7fac31490f7773978e6fc2b1e80391018b73`.
 
-**Upstream contract:** [`tenferro-rs` PR #1717](https://github.com/tensor4all/tenferro-rs/pull/1717), merge commit `a21a4c602fc6700b9bc0c3f1b14ebd19b9d7ec45`.
+**Scope:** the tenferro-only adapter. tensor4all explicit contexts, tensor
+transport, and tensor reconstruction stay outside this change.
 
 ## 1. Crate and dependency boundary
 
-Add one non-publishable workspace member, `hataori-tenferro`, instead of
-binding tenferro's backend inside the `hataori` package. (The root package
-separately has an opt-in `tenferro` feature that adds only `tenferro-tensor`
-for the Mandelbrot examples; it is not part of the adapter contract.) The
-adapter depends on:
+`hataori-tenferro` is a non-publishable workspace member. It depends on:
 
-- local `hataori` with `rayon` enabled;
-- `rayon = "1.10"` directly, for the `ThreadPool` handle it inspects;
-- `tenferro-cpu` and `tenferro-tensor` at the exact upstream merge revision;
-- no tensor4all crate and no MPI backend.
+- local `hataori` with `rayon` enabled (for the `Lanes` contract and
+  `pmap_lanes`);
+- `tenferro-cpu` (default features off, `native` = Faer provider) and
+  `tenferro-tensor` at exactly `74aa7fac`;
+- an optional `mpi` feature (`hataori/mpi` plus upstream `mpi`) used only by the
+  `pmap_lanes` world-size-1 smoke example.
 
-The root manifest becomes a package-plus-workspace whose `members` list gains
-`adapters/tenferro`, with `default-members = ["."]` and resolver 2.
-Consequently ordinary root `cargo build`/`cargo test` still select only
-`hataori`. The root package remains dependency-free by default and its
-Rust 1.85 feature matrix (default, `rayon`, `mpi`, `rsmpi-rt`, and hybrids)
-remains free of tenferro, including a fresh Rust 1.85 check with the workspace
-member present. The root package's opt-in `tenferro` example feature is outside
-that matrix: it pulls `tenferro-tensor` and therefore also needs Rust >= 1.96;
-`scripts/check-tutorial-examples.sh` builds and runs the Mandelbrot examples
-with the `tenferro` feature. The adapter follows the pinned tenferro
-revision's Rust 1.96 MSRV and has a separate current-stable CI/gate invocation.
-A crates.io release is out of scope while its upstream dependency is a git
-revision.
+The adapter declares `rust-version = "1.96"`, matching the pinned tenferro-rs
+workspace. It adds no Rayon handle, pool handle, tensor4all crate, or MPI
+backend to ordinary Hataori builds; the root package's opt-in `tenferro` example
+feature is separate and outside the Rust 1.85 core matrix.
 
-## 2. Public API
+## 2. Ownership
 
-The adapter exposes one binding and one typed error:
+| Layer | Owns | Does not own |
+|---|---|---|
+| tenferro | the CPU pool and its invariants (worker affinity, worker stack), root admission (held session), one owner-inheriting child session per worker lane | which item runs where |
+| hataori | scheduling: work queues, item-to-lane assignment, ordering and error rules, MPI distribution | a pool, a domain, or a thread on the tensor path |
+| application | the per-item function | parallelism machinery |
+
+The adapter is the seam: it opens tenferro's held root session, lends
+tenferro's phase lanes to Hataori's `Lanes` implementation, and maps the two
+cancellation and error vocabularies. It creates no pool, no domain, and no
+thread, installs no thread-local selector, and never gives tenferro a borrowed
+pool. D9 stays intact: the only admission is tenferro's held session.
+
+A lane is one worker of the backend's own pool plus one child session that stays
+open for the whole run, so scratch and prepared plans are reused across the
+items that lane pulls. Lane kernels are not forced to be serial: the child
+session follows tenferro's own lane policy, so a kernel issued from a lane may
+still use the pool. Hataori's contract covers only which item runs on which
+lane; it says nothing about how a kernel uses the pool.
+
+## 3. Public API
 
 ```rust
-pub struct TenferroDomain { /* private */ }
+pub struct TenferroLanes<'b> { /* CpuHeldSession<'b> */ }
 
-impl TenferroDomain {
-    pub fn new(domain: hataori::Domain)
-        -> Result<Self, TenferroAdapterError>;
+impl<'b> TenferroLanes<'b> {
+    pub fn open(backend: &'b tenferro_cpu::CpuBackend) -> Result<Self, TenferroAdapterError>;
+    pub fn close(self) -> Result<(), TenferroAdapterError>;
+}
 
-    pub fn domain(&self) -> &hataori::Domain;
-
-    pub fn with_backend<R>(
-        &self,
-        operation: impl FnOnce(&mut tenferro_cpu::CpuBackend) -> R,
-    ) -> Result<R, TenferroAdapterError>;
+impl hataori::Lanes for TenferroLanes<'_> {
+    type Lane<'l> = tenferro_cpu::PhaseLane<'l>;
+    type Error = TenferroAdapterError;
+    // run(lane)                -> held.phase(|p| p.run(..))
+    // run_with_coordinator(..) -> held.phase(|p| p.run_with_coordinator(..))
 }
 ```
 
-`TenferroDomain::new` consumes one Rayon-backed Hataori domain. Ownership makes
-one adapter entry gate canonical for that domain; two independently guarded
-adapters cannot be constructed from the same `Domain`. Callers pass
-`adapter.domain()` to `map_in`/`pmap`. Construction failure drops the supplied
-domain normally and leaks no pool or backend resource.
+`open` admits the backend's root session for the executor's lifetime and records
+`backend.num_threads()` as the lane count, which is the count tenferro's phase
+will drive. `close` releases the session and reports an affinity-restoration
+failure instead of logging it; dropping the executor performs the same release
+best-effort.
 
-Construction:
+The executor is `!Send` exactly like the held session, because admission, the
+execution-owner marker, and the caller's narrowed CPU mask belong to the opening
+thread. A caller that needs to run on another thread opens a new executor there.
 
-1. requires a Rayon-backed Hataori domain;
-2. retains the exact `Arc<rayon::ThreadPool>` already owned or retained by that
-   domain;
-3. maps `hataori::DomainId` losslessly to `tenferro_tensor::CpuDomainId`;
-4. uses the domain's complete nonzero `worker_count` as the tenferro thread
-   budget;
-5. constructs `RayonCpuDomainExecutor`,
-   `ExternalCpuDomain::new_caller_managed`, and
-   `CpuBackend::from_external_managed_domains` from the pinned public tenferro
-   API.
+`TenferroAdapterError` has four typed variants that all keep their upstream
+source:
 
-No second pool, executor registry, global backend, or Hataori-specific tenferro
-type is introduced.
+| Variant | Meaning |
+|---|---|
+| `Open(SessionEntryError)` | the held root session could not be opened |
+| `Phase(CpuPhaseError)` | tenferro refused to open a phase (for example `TargetPoolCaller`) |
+| `Session(SessionEntryError)` | a lane could not enter or clean up its child session |
+| `Close(CpuHeldSessionError)` | the caller's CPU affinity mask could not be restored |
 
-`with_backend` is the scoped entry used inside a Hataori `Inner` callback. It
-checks that the calling thread belongs to the bound Rayon pool before cloning the
-cheap `CpuBackend` handle and invoking the borrowed operation. The clone shares
-tenferro's per-domain active-entry flag and does not create a runtime, pool, or
-provider thread. The operation and result need not be `'static`.
+## 4. One run
 
-The Hataori admission is held by `map_in`/`pmap`, but their established callback
-shape intentionally does not expose `DomainAdmission`. Therefore the adapter
-does not pretend that an atomic observation is a non-aliasing admission witness.
-Calling `with_backend` from an admitted `LocalMode::Inner` callback is a safe API
-contract, not an unsafe precondition. Pool membership is checked locally. A
-caller that directly schedules unrelated work onto a caller-owned pool is
-already outside Hataori's admission contract.
-
-Exact-revision runtime testing found that tenferro's shared caller-managed flag
-panics with `BACKEND_REENTRY_PANIC` on collision rather than returning a typed
-error. The domain-owning adapter therefore owns one nonblocking RAII `AtomicBool`
-entry gate.
-It is acquired only around `with_backend`, returns typed `ConcurrentEntry` before
-the user closure on collision, and releases on success, error return, or unwind.
-This is an API panic firewall, not capacity arbitration or coarse admission: it
-never waits, never enters `ResourceArbiter`, and does not replace Hataori's
-running slot. tenferro's own flag remains the final guard against a caller who
-clones and recursively enters the supplied backend inside one operation.
-
-The core adds one narrow read-only integration observation required by the
-separate adapter: cloning the exact selected Rayon pool `Arc`. The accessor grants
-no Hataori admission and its rustdoc states that direct pool submission bypasses
-Hataori scheduling. This deliberate public seam is the cost of keeping tenferro
-out of the core crate; no admission-state reader, TLS marker, executor trait, or
-global registry is added.
-
-## 3. Admission and fan-out ownership
-
-The required call shape is:
+`map_in_lanes` and `pmap_lanes` drive the same Hataori `Lanes` methods, so the
+adapter needs no queue of its own. (`map_in` takes a Hataori `Domain`, not a
+`Lanes` executor, so it is not a tenferro entry.)
 
 ```text
-Hataori map_in/pmap(LocalMode::Inner)
-  -> Hataori DomainAdmission (sole coarse admission)
-    -> one callback on the selected Rayon pool
-      -> TenferroDomain::with_backend
-        -> tenferro caller-managed per-domain public-entry guard
-          -> same Rayon pool for provider-owned inner fork/join
+hataori::map_in_lanes(map) / pmap_lanes
+  -> Lanes::run                 -> held.phase(|p| p.run(lane))                 (no coordinator)
+  -> Lanes::run_with_coordinator-> held.phase(|p| p.run_with_coordinator(c, lane))
+       lane k = tenferro worker k + child session k
+         loop { item = hataori's next index; f(item, &mut lane); write slot }
 ```
 
-Hataori's running slot is the only cross-operation/coarse admission mechanism.
-At exact tenferro commit `a21a4c6`, `CpuBackend::acquire_execution_permit`
-matches `ResolvedCpuExecution::ExternalCallerManaged` and constructs
-`ResourcePermit::caller_managed` directly from the domain's shared active flag;
-it does not call any `ResourceArbiter::acquire*` method or wait for capacity.
-The adapter's local entry gate likewise never waits and carries no CPU-set or
-capacity policy.
+Every run creates one `LaneControl` and lends it to the lane bodies and to the
+coordinator, and it bridges in both directions:
 
-`LocalMode::Outer` is not a supported adapter entry mode, but the adapter cannot
-pre-identify the mode from the unchanged callback signature. Concurrent calls
-are rejected by the adapter's typed `ConcurrentEntry` gate before a backend
-clone or user closure is produced; they cannot reach tenferro's panic or create
-multiple simultaneous provider entries. Rustdoc and examples use only `Inner`,
-and a regression test makes this behavior explicit. The adapter does not change
-`LocalMode` or add a partial worker budget.
+- **tenferro to Hataori:** if a lane observes `PhaseLane::cancelled()` when it
+  starts, it marks the Hataori control; a lane body that returns `Err` or
+  unwinds marks it before tenferro joins (an unwind guard also marks it).
+- **Hataori to tenferro:** when the coordinator returns, errors, or unwinds, the
+  Hataori control is cancelled *and* `PhaseControl::cancel()` is called, so
+  lanes that poll either signal stop feeding. This is the `Lanes` contract:
+  "when the coordinator returns, errors, or panics, the control is cancelled and
+  every lane is joined".
+- **tenferro's own stop, without a lane callback:** tenferro can fail a phase
+  before a lane body runs (a child-session entry or cleanup failure), so the
+  executor's stop signal may never reach `run_lane`. The coordinator therefore
+  receives a `LaneControl::with_probe` view of the run's control whose probe is
+  `|| phase_control.cancelled()`. The view shares the run's cancellation flag, so
+  `cancel` from either side still reaches both, and it adds tenferro's own stop
+  to `cancelled()`. A coordinator waiting on `LaneControl` is thereby released
+  instead of waiting forever, and it closes its work queue so the remaining lanes
+  finish.
 
-## 4. Provider and placement policy
+tenferro owns the join: `CpuPhase::run` broadcasts to every worker and
+`run_with_coordinator` runs the coordinator in an `in_place_scope`, so both
+return only after every lane finished, and a lane panic is resumed on the
+calling thread after the join. The adapter does not duplicate that join and
+does not catch panics.
 
-The adapter uses tenferro's standard caller-managed constructor with
-`tenferro-cpu` default features disabled and only `cpu-faer` enabled. Independently,
-at exact commit `a21a4c6`, `external_domain_backend_kind` forces
-`CpuBackendKind::Faer` whenever any descriptor has
-`CpuAdmissionMode::CallerManaged`, rather than using `default_compiled`.
-Construction then validates the provider bundle before returning the backend. A
-provider with external workers, uncontrolled thread count, or no caller-managed
-placement control is rejected by tenferro's typed provider validation. The
-adapter neither duplicates that capability matrix nor manipulates environment
-thread counts.
+Error mapping keeps the `source()` chain intact:
 
-Hataori remains the source of its managed/external affinity status. The generic
-tenferro Rayon executor reports no independent affinity claim and caller-owned
-shutdown, as specified upstream. Dropping the adapter never shuts down the
-Hataori pool.
+| tenferro | Hataori |
+|---|---|
+| `PhaseRunError::Lane(e)` | `LanesError::Lane(e)` |
+| `PhaseRunError::Coordinator(e)` | `LanesError::Coordinator(e)` |
+| `PhaseRunError::Session(s)` | `LanesError::Executor(TenferroAdapterError::Session(s))` |
+| `PhaseRunError::SingleLane` | `LanesError::SingleLane` |
+| `CpuPhaseError::TargetPoolCaller` (or any phase-open error) | `LanesError::Executor(TenferroAdapterError::Phase(..))` |
 
-## 5. Errors
+`SingleLane` is forwarded rather than hidden so the hybrid `pmap` takes its
+documented explicit fallback: a one-worker backend drives its single lane
+inline on the caller, and `pmap_lanes` executes each batch through
+`Lanes::run` between MPI progress steps. `map_in_lanes` needs no fallback,
+because `Lanes::run` supports the inline lane directly.
 
-`TenferroAdapterError` preserves typed sources for:
+## 5. Removed Phase 20a chain
 
-- missing Hataori Rayon pool;
-- tenferro external-domain construction;
-- tenferro backend construction;
-- entry from outside the bound domain pool;
-- simultaneous or recursive adapter entry (`ConcurrentEntry`).
+tenferro-rs #2004 (D9) removed borrowing an external pool, so the adapter no
+longer has:
 
-Construction and entry failures run no user operation. Error and unwind paths
-release the upstream tenferro public-entry guard; Hataori's existing RAII guard
-releases coarse admission when `map_in` or `pmap` leaves its scope.
+- `TenferroDomain::new(Domain)`, `domain()`, and the borrowed-pool backend built
+  from `ExternalCpuDomain::new_caller_managed` /
+  `CpuBackend::from_external_managed_domains`;
+- `with_backend` and its per-domain `AtomicBool` `ConcurrentEntry` gate, plus
+  `OutsideDomainPool` pool-membership entry;
+- `MissingPool` and `ExternalDomain` errors, the `LocalMode::Inner`-only entry
+  contract, and the `rayon::ThreadPool` handle the old binding retained.
+
+There is one engine and one admission now, and no adapter-owned entry gate is
+needed: the held session already rejects reentry and contention with typed
+tenferro errors, and lanes cannot open a root session at all.
 
 ## 6. Acceptance evidence
 
-The implementation must leave one checked entry point that proves:
+`scripts/check-tenferro.sh` is the single entry point. It proves:
 
-- default and `rayon` Hataori dependency trees contain no tenferro or tensor4all;
-- the adapter tree contains the exact tenferro revision and no tensor4all crate;
-- adapter construction reports caller-managed admission, full worker budget,
-  caller-owned executor shutdown, no fabricated placement, and Faer selection;
-- a known-value tenferro tensor operation runs from `LocalMode::Inner` on only
-  the supplied Rayon team's named workers;
-- a pool `start_handler` count remains exactly the declared worker count, a
-  global-pool sentinel remains untouched, and observed worker names all belong
-  to the supplied team; upstream exact-revision tests separately exercise all
-  workers inside tenferro's native parallel region;
-- entry from a foreign thread is typed and runs no operation;
-- Hataori contention remains nonblocking, and success, callback error, and
-  unwind all permit later reuse;
-- incompatible `Outer` fan-out returns typed `ConcurrentEntry`, runs only one
-  closure, never reaches tenferro's collision panic, and allows later reuse;
-- borrowed non-`'static` input/output state compiles and runs;
-- `cargo fmt`, tests, all-target clippy with `-D warnings`, rustdoc/doctests,
-  dependency-boundary checks, and `git diff --check` pass.
+- core default and `rayon` trees still contain no tenferro or tensor4all crate;
+- the adapter tree carries exactly the pinned tenferro revision (no older rev,
+  no tensor4all package);
+- `cargo test -p hataori-tenferro` proves, on a two-worker backend:
+  known-value tenferro operations through `map_in_lanes(TenferroLanes)` (every
+  item once, input order preserved, two distinct lane indices, and a worker-name
+  census where every observed worker name starts with `tenferro-cpu-`), the
+  lowest callback-error index, a lane panic that is resumed only after the join
+  with the same session reusable afterwards, and a one-worker backend whose
+  `run_with_coordinator` returns `LanesError::SingleLane` without running either
+  callback while `map_in_lanes` still evaluates every item on the inline lane;
+- direct `Lanes` liveness cases with peers waiting on `LaneControl`: a normal
+  coordinator return releases the lanes without an explicit `cancel` (the
+  cancellation-on-exit guard is what releases them), and a coordinator error, a
+  coordinator panic, a lane error, and a lane unwind each release the waiting
+  peers and join every lane; the core `LaneControl::with_probe` unit test covers
+  the shared flag and the external stop view;
+- the adapter builds no pool and no thread: no worker name outside
+  `tenferro-cpu-*` is observed, and the inline lane runs on the calling thread;
+- `pmap_lanes(TenferroLanes)` succeeds at world size one with an explicit worker
+  count: `--workers 1` asserts one lane and the `LanesError::SingleLane` shape
+  the hybrid `pmap` falls back from, and `--workers 2` (launcher set not to pin
+  the rank) asserts two lanes and the concurrent coordinator;
+- `cargo fmt`, all-target clippy with `-D warnings` (with and without the `mpi`
+  example feature), rustdoc with `-D warnings`, doctests, the Rust 1.85 core
+  checks, and `git diff --check` pass, each stage inside its own process-group
+  watchdog (a cold dependency build is retried as a fixed number of bounded
+  attempts so cargo resumes from its cache).
 
-MPI transport and tensor serialization are unchanged. Phase 20b owns explicit
-tensor4all contexts and logical tensor reconstruction after
-`tensor4all-rs#663`; Phase 20c owns the three-repository MPI integration gate.
-
-## 7. Follow-up: lanes instead of the external-domain chain
-
-This document records the implemented Phase 20a state, which is pinned to a
-tenferro revision that still accepts a caller-managed external domain. Upstream
-tenferro-rs #2004 removed borrowing an external pool, so a follow-up rewrite
-keeps tenferro as the sole owner of its pool and admission and binds the two
-layers through the core lanes contract instead (`docs/design.md` §6.1,
-[`tenferro-rs#2201`](https://github.com/tensor4all/tenferro-rs/issues/2201)):
-Hataori schedules items onto tenferro phase lanes (`CpuPhase::run` /
-`run_with_coordinator`), and the adapter maps tenferro's `PhaseControl` into
-Hataori's `LaneControl`. `LocalMode::Outer` then becomes a supported mode
-because each lane carries its own owner-inheriting child session. Nothing in
-this section is implemented in the adapter yet.
+Not claimed here: multi-rank hybrid acceptance for the adapter (the smoke runs
+at world size one), tensor4all explicit contexts and reconstruction (Phase 20b),
+and any three-repository integration gate (Phase 20c). The repository MPI
+harness (`examples/mpi_*`) belongs to the root `hataori` package and cannot host
+the adapter, because the dependency direction is adapter -> `hataori`; the
+adapter therefore carries its own `mpi`-gated example.

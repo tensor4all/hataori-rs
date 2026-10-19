@@ -68,10 +68,12 @@ Hataori has no default dependencies. Optional execution backends are selected ex
 
 `mpi` and `rsmpi-rt` expose the same Hataori API and are mutually exclusive. The `rsmpi-rt` feature supports build environments without MPI headers, a C compiler, or libclang and can share the MPI runtime used by MPI.jl or mpi4py.
 
-The non-publishable `hataori-tenferro` workspace adapter binds an admitted
-whole-domain `Inner` callback to tenferro's caller-managed Faer backend without
-adding tenferro to ordinary Hataori builds; it declares `rust-version = "1.96"`
-following the pinned tenferro-rs. See its
+The non-publishable `hataori-tenferro` workspace adapter exposes a tenferro held
+session as Hataori execution lanes: `map_in_lanes` and `pmap_lanes` schedule
+items across tenferro's own workers while tenferro keeps its pool, admission,
+and per-worker child sessions. It adds no tenferro dependency to ordinary
+Hataori builds and declares `rust-version = "1.96"` following the pinned
+tenferro-rs. See its
 [design and usage contract](docs/design/tenferro-adapter.md).
 
 ### MPI backend prerequisites
@@ -186,7 +188,7 @@ Actions" once by an administrator.
 
 ## Status
 
-Hataori's P0 core and tenferro-only adapter foundation are implemented. P1 adds
+Hataori's P0 core and the tenferro held-session lane adapter are implemented. P1 adds
 an opt-in, default-off bounded prefetch of one batch per remote hybrid domain.
 The tensor4all explicit-context and tensor-reconstruction layer remains blocked
 on [tensor4all-rs#663](https://github.com/tensor4all/tensor4all-rs/issues/663).

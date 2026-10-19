@@ -46,9 +46,11 @@ trees never enter ordinary Hataori builds; the default, `rayon`, and MPI trees
 contain no tenferro or tensor4all crate (enforced by `scripts/check-core.sh`
 and `scripts/check-tenferro.sh`), and the opt-in `tenferro` example feature is
 built and run by `scripts/check-tutorial-examples.sh`, which builds and runs
-the Mandelbrot examples with the `tenferro` feature. Phase 20a provides the tenferro-only
-`hataori-tenferro` foundation pinned to tenferro merge `a21a4c602fc6700b9bc0c3f1b14ebd19b9d7ec45`;
-Phase 20b adds tensor4all contexts and reconstruction after tensor4all-rs#663.
+the Mandelbrot examples with the `tenferro` feature. The tenferro-only
+`hataori-tenferro` adapter is pinned to tenferro merge `74aa7fac31490f7773978e6fc2b1e80391018b73`
+and binds Hataori lanes to a tenferro held session
+([adapter design](design/tenferro-adapter.md)); Phase 20b adds tensor4all
+contexts and reconstruction after tensor4all-rs#663.
 
 Hataori uses standard-library collections, synchronization, channels, and errors. P0 does not add an async runtime, general channel/locking crate, error-derive crate, logging facade, CLI framework, topology library, or generic transport/executor plugin system.
 
@@ -98,11 +100,11 @@ tenferro   -X-> hataori
 tensor4all -X-> hataori
 ```
 
-`hataori-tenferro` owns tenferro external-domain handles, caller-managed
-admission mapping, same-pool checks, and provider capability enforcement. The
-future tensor adapter owns tensor4all explicit contexts and domain-owned
-runtimes/caches, tensor logical wire representation and target-context
-reconstruction, and context-specific errors.
+`hataori-tenferro` owns the tenferro held-session handle, phase-lane entry,
+two-way cancellation bridging, and typed error mapping. The future tensor
+adapter owns tensor4all explicit contexts and domain-owned runtimes/caches,
+tensor logical wire representation and target-context reconstruction, and
+context-specific errors.
 
 Neither tenferro nor tensor4all may depend on Hataori types. Hataori core must build without either dependency unless the opt-in `tenferro` example feature is requested.
 
@@ -229,7 +231,7 @@ External mode accepts a caller-owned pool plus declared CPU set and worker budge
 - It validates only observable facts and reports whether placement is verified or caller-declared.
 - A pool injected first and pinned afterward by Hataori is not supported.
 
-The core constructor does not accept a tenferro handle. The optional adapter associates backend handles and contexts with the core `DomainId`.
+The core constructor does not accept a tenferro handle. The optional adapter takes a caller-built tenferro backend and never associates a Hataori domain with it: tenferro owns its pool and admission, and Hataori schedules items onto its phase lanes.
 
 ## 6. Intra-domain execution modes
 
@@ -282,7 +284,7 @@ A lane callback receives the lane's own resource, so `map_in_lanes` exposes `f: 
 
 An executor that cannot overlap a coordinator with its lanes returns the typed `LanesError::SingleLane` without running either callback. The hybrid `pmap` protocol then falls back explicitly to executing each batch on the coordinator thread through `Lanes::run` between MPI progress steps; the fallback is documented, covered by an MPI smoke stage, and never runs work twice. `lane_count()` is never used to infer the fallback. In that inline mode a panicking batch aborts with `MPI_Abort(71)` as soon as its outcome is known, before the prefetched batch is executed.
 
-`Inner` is a generic core resource contract, not a tenferro-specific variant. The callback still has the ordinary `Fn(T) -> Result<U, E>` shape and obtains no core executor handle. An optional adapter may capture its explicit tenferro/tensor4all context, verify before execution that it belongs to the same domain pool, and then enter tenferro's borrowed same-pool API from the callback. Core neither constructs a second pool nor imports backend types.
+`Inner` is a generic core resource contract, not a tenferro-specific variant. The callback still has the ordinary `Fn(T) -> Result<U, E>` shape and obtains no core executor handle. A backend adapter supplies its own `Lanes` implementation instead: `hataori-tenferro` opens tenferro's held session and exposes its phase lanes, so `map_in_lanes` and `pmap_lanes` schedule items across tenferro's own workers while tenferro keeps its pool, admission, and per-worker child sessions. `map_in` takes a Hataori `Domain` and therefore never drives a tenferro session; core neither constructs a second pool nor imports backend types.
 
 ## 7. Dynamic P0 scheduler
 
@@ -439,24 +441,27 @@ P0 uses scoped synchronous execution and does not add `'static` for hypothetical
 
 ## 13. Tensor integration contract
 
-Phase 20a establishes this ownership chain:
+The tensor path has this ownership chain:
 
 ```text
-Hataori domain
-  -> tenferro caller-managed external domain
-    -> the same Rayon pool
+tenferro held session (one root admission, tenferro's own pool)
+  -> tenferro phase lanes (one worker + one owner-inheriting child session each)
+    -> Hataori schedules items onto those lanes
 ```
 
-Phase 20b places tensor4all's explicit context and domain-owned runtimes/caches
-above that bound tenferro backend; it does not replace the pool or admission
-chain.
+Hataori owns scheduling (which item runs on which lane, ordering, error rules,
+MPI distribution); tenferro owns the pool, admission, and lane resources.
+Neither layer borrows the other's pool. Phase 20b places tensor4all's explicit
+context and domain-owned runtimes/caches above the same lane seam; it does not
+replace the pool or admission chain.
 
 Required tenferro capabilities:
 
-- caller-managed external CPU admission that bypasses the process-global CPU arbiter;
-- synchronous borrowed same-executor entry from a caller-owned pool;
-- no second pool, blocking admission, or public-backend recursive entry;
-- typed errors for unsupported reentry and budget violations.
+- a held root CPU session that owns its pool and its admission: the root entry acquires from tenferro's process-global `ResourceArbiter`, so a held session started while another tenferro execution owns its CPUs waits in FIFO order instead of failing;
+- a phase lease that lends that session's own workers as lanes with one child session per lane;
+- a caller-thread coordinator that runs concurrently with the lanes, can cancel them, and can observe a phase stop that never reaches a lane body;
+- no second pool, no second admission for the same work, and no root-session reentry from a lane;
+- typed errors for lane, coordinator, session, single-lane, and target-pool-caller failures.
 
 Required tensor4all capabilities:
 
@@ -491,12 +496,12 @@ The build rejects simultaneous `mpi` and `rsmpi-rt` features.
 
 The optional adapter separately rejects:
 
-- duplicate Hataori and tenferro CPU admission;
-- unavailable caller-managed same-pool capability;
+- a held session that another root execution already owns;
+- a phase opened from one of its own pool's workers (`TargetPoolCaller`);
+- a coordinator run on a one-lane backend (`SingleLane`, forwarded so hybrid `pmap` takes its explicit fallback);
 - tensor4all global-default fallback;
 - context/cache mismatch;
-- uncontrolled provider threads;
-- conflicting Outer/Inner backend fan-out.
+- uncontrolled provider threads.
 
 Backend-specific errors do not enter the core error enum.
 
@@ -543,10 +548,11 @@ Backend-specific errors do not enter the core error enum.
 
 ### Adapter and three-repository integration
 
-- `hataori-tenferro` preserves Hataori's running slot as the only coarse CPU admission.
-- tenferro's CPU arbiter is not acquired in caller-managed mode.
-- Same-pool inner fork/join creates no pool or OS thread and does not panic or deadlock.
-- Concurrent adapter entry is rejected before tenferro's panic-on-collision guard.
+- `hataori-tenferro` opens one tenferro held session and creates no pool, domain, or OS thread.
+- tenferro's held-session admission is the only tensor-path admission; Hataori adds no second admission for the same work.
+- Items scheduled through `map_in_lanes`/`pmap_lanes` run on tenferro's own named workers, and lane kernels stay under tenferro's lane policy.
+- A lane error, lane panic, or coordinator exit cancels the shared Hataori control and tenferro's phase control, and every lane is joined before return or unwind.
+- A coordinator waiting on `LaneControl` is released by tenferro's own phase stop (including a failure before any lane body runs) and by the executor's cancellation-on-exit, so it never waits forever.
 - tensor4all plain, graph, and eager AD paths all use the explicit target context after Phase 20b.
 - Global/default tensor runtime sentinels remain untouched.
 - Remote tensor reconstruction occurs in the target context and serializes no execution identity.
@@ -624,7 +630,7 @@ review that replaced the measurement.
 ### Other P1 candidates
 
 - a controller-driven expanding queue, only after a real workload defines bounded pending-memory and determinism requirements;
-- multiple disjoint domains per rank, after caller-managed backend admission is proven;
+- multiple disjoint domains per rank, after a second admitted CPU domain per process is proven;
 - a dedicated coordinator policy, only if progress latency is measured as a bottleneck;
 - NUMA-aware placement or multithreaded providers, each behind separate correctness and performance evidence.
 
@@ -633,7 +639,7 @@ review that replaced the measurement.
 P0 is complete only when:
 
 1. Hataori core scheduling, transport, affinity, bounds, and error tests pass;
-2. tenferro provides and tests caller-managed admission and same-pool borrowed entry;
+2. tenferro provides and tests held-session admission and phase lanes with a caller-thread coordinator;
 3. tensor4all provides and tests explicit plain/graph/eager-AD contexts with no default fallback;
 4. the optional adapter passes the joint ownership, admission, context, wire, and thread-budget gate;
 5. Hataori pins known-good tenferro and tensor4all revisions.

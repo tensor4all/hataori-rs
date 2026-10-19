@@ -61,7 +61,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      - name: Install core MSRV
-        run: rustup toolchain install 1.85.0 --profile minimal
-      - name: Run Phase 20a adapter matrix
+      - name: Install core MSRV and MPI launcher
+        run: |
+          rustup toolchain install 1.85.0 --profile minimal
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libopenmpi-dev openmpi-bin
+      - name: Run tenferro held-session lane adapter matrix
         run: scripts/check-tenferro.sh

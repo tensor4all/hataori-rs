@@ -37,6 +37,7 @@ one built from [MPIwrapper](https://github.com/eschnett/MPIwrapper). See the
 `examples/`; because the pinned tenferro-rs workspace sets
 `rust-version = "1.96"`, this feature needs Rust >= 1.96 (the rest of the
 core matrix keeps MSRV 1.85). The separate `hataori-tenferro` workspace
-adapter, which likewise declares `rust-version = "1.96"`, binds a
-whole-domain `LocalMode::Inner` callback to tenferro's caller-managed Faer
-backend; see the [adapter design](../design/tenferro-adapter.md).
+adapter, which likewise declares `rust-version = "1.96"`, exposes a tenferro
+held session as execution lanes for `map_in_lanes` and `pmap_lanes`, so Hataori
+schedules items across tenferro's own Faer workers; see the
+[adapter design](../design/tenferro-adapter.md).
