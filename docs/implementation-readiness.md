@@ -9,7 +9,7 @@ This document records why the core design was judged implementable, what evidenc
 | Scope | Readiness |
 |---|---|
 | Hataori core | Implemented; independent review `Correct-to-merge`; delivered matrix in `core-acceptance-ledger.md` |
-| tenferro adapter | Implemented (`adapters/tenferro`) against tenferro-rs #2202: one held root session lends its phase lanes to `map_in_lanes`/`pmap_lanes`; ledger in `tenferro-acceptance-ledger.md` |
+| tenferro adapter | Implemented (`adapters/tenferro`) against tenferro-rs #2206: the caller holds one engine per lane and `map_in_lanes`/`pmap_lanes` run on them; ledger in `tenferro-acceptance-ledger.md` |
 | tensor4all context/reconstruction adapter | Blocked on tensor4all-rs #663 |
 | P1 bounded prefetch | Implemented (commit `f7050ad`); independent review `Correct-to-merge` recorded in `docs/review-log.md` |
 | Expanding queues and multiple domains | Deferred behind separate evidence gates in `design.md` |
@@ -92,7 +92,7 @@ Unsigned `MPI_MIN` is avoided because released implementations produced wrong an
 
 ### Tensor prerequisites
 
-- tenferro held-session admission with phase lanes and a caller-thread coordinator: <https://github.com/tensor4all/tenferro-rs/issues/2201> — completed by merged PR #2202 (supersedes the caller-managed external domain of issue #1716, removed by #2004 D9)
+- tenferro caller-held engines with no sessions and no tenferro-owned threads: <https://github.com/tensor4all/tenferro-rs/issues/2206> — completed by merged PR #2209, superseding the held-session model of #2201 (itself superseding the caller-managed external domain of #1716, removed by #2004 D9)
 - tensor4all explicit plain/graph/eager-AD contexts: <https://github.com/tensor4all/tensor4all-rs/issues/663> — still open
 
 Only the tensor4all context/reconstruction phase remains externally blocked.
@@ -106,7 +106,7 @@ Only the tensor4all context/reconstruction phase remains externally blocked.
 5. **MPI-only `pmap`** — private communicator, collective preflight, dynamic scheduler, synchronous root participation, drain and reuse.
 6. **Hybrid `pmap`** — `in_place_scope`, local completion channel, fair `MPI_Iprobe` loop, rendezvous progress.
 7. **Collective placement helpers** — root-coordinated `broadcast`, `scatter`, and `gather` on the same private wire rules.
-8. **tenferro adapter** — pin merged PR #2202, expose tenferro's held session as Hataori execution lanes over tenferro's own Faer pool, and retain core dependency isolation.
+8. **tenferro adapter** — pin merged PR #2209, run one Hataori lane per caller-held tenferro engine, and retain core dependency isolation.
 9. **tensor4all context/reconstruction adapter** — only after #663 lands at a known-good revision.
 10. **Joint integration** — run the three-repository MPI and thread-ownership gate after both adapter layers exist.
 

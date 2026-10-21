@@ -66,5 +66,5 @@ jobs:
           rustup toolchain install 1.85.0 --profile minimal
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libopenmpi-dev openmpi-bin
-      - name: Run tenferro held-session lane adapter matrix
+      - name: Run tenferro engine lane adapter matrix
         run: scripts/check-tenferro.sh

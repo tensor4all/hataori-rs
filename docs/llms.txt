@@ -41,7 +41,7 @@
 
 - [P0 design](https://shinaoka.github.io/hataori-rs/design.html): The implemented synchronous core: the execution-lanes local fan-out (`Lanes`, `map_in_lanes`, `pmap_lanes`, `RayonLanes`), scheduler state machine, wire codec, collective preflight, domain admission, and the acceptance contract.
 - [P1 bounded prefetch](https://shinaoka.github.io/hataori-rs/design/bounded-prefetch.html): The implemented opt-in prefetch of one batch per remote hybrid domain and its invariants.
-- [tenferro adapter](https://shinaoka.github.io/hataori-rs/design/tenferro-adapter.html): The non-publishable `hataori-tenferro` adapter exposing a tenferro held session as execution lanes (`TenferroLanes`) for `map_in_lanes` and `pmap_lanes`, with two-way cancellation bridging.
+- [tenferro adapter](https://shinaoka.github.io/hataori-rs/design/tenferro-adapter.html): The non-publishable `hataori-tenferro` adapter running one Hataori lane per caller-held tenferro engine (`TenferroLanes`) for `map_in_lanes` and `pmap_lanes`, with cancellation on lane failure and coordinator exit.
 - [Distributed runtime architecture](https://shinaoka.github.io/hataori-rs/design/distributed-runtime.html): Accepted Phase A-E architecture and current implementation/acceptance boundaries.
 - [Object placement and locality-aware task API](https://shinaoka.github.io/hataori-rs/design/object-placement-api.html): Implemented fixed placement, colocation, leases, and migration-ready routing contract.
 - [Legacy performance runner](https://shinaoka.github.io/hataori-rs/design/legacy-performance-runner.html): Immutable P0/P1 baseline runner and frozen measurement boundary.
@@ -58,7 +58,7 @@
 - [Phase C acceptance ledger](https://shinaoka.github.io/hataori-rs/phase-c-acceptance-ledger.html): Remote-object evidence.
 - [Phase D acceptance ledger](https://shinaoka.github.io/hataori-rs/phase-d-acceptance-ledger.html): Migration evidence.
 - [Phase E acceptance ledger](https://shinaoka.github.io/hataori-rs/phase-e-acceptance-ledger.html): Algorithm correctness and outstanding performance status.
-- [tenferro acceptance ledger](https://shinaoka.github.io/hataori-rs/tenferro-acceptance-ledger.html): Held-session lane adapter evidence behind `scripts/check-tenferro.sh`.
+- [tenferro acceptance ledger](https://shinaoka.github.io/hataori-rs/tenferro-acceptance-ledger.html): Engine lane adapter evidence behind `scripts/check-tenferro.sh`.
 
 ## Agent rules
 
