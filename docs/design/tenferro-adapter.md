@@ -1,17 +1,18 @@
-# tenferro adapter: lanes over a held session
+# tenferro adapter: lanes over caller-held engines
 
-**Status:** Implemented (hataori-rs#24). This document supersedes the Phase 20a
-external-domain design, which tenferro-rs no longer supports.
+**Status:** Implemented (this change). This document supersedes the held-session
+design of hataori-rs#24, which tenferro-rs no longer supports.
 
 **Upstream contract:** tenferro-rs
-[#2004](https://github.com/tensor4all/tenferro-rs/pull/2004) decision D9 (tenferro
-never borrows a caller pool) and
-[#2202](https://github.com/tensor4all/tenferro-rs/pull/2202) (phase with a
-caller-thread coordinator), merge commit
-`74aa7fac31490f7773978e6fc2b1e80391018b73`.
+[#2206](https://github.com/tensor4all/tenferro-rs/issues/2206) (caller-held
+engines, no sessions, no tenferro-owned threads) and its implementation
+`5f0ae0a3e58b38ff45c25efff577a7d2a6a95b30`. The cross-repository model is
+tensor4all-meta
+[`docs/design/core-boundary-and-execution-ownership.md`](https://github.com/tensor4all/tensor4all-meta/blob/main/docs/design/core-boundary-and-execution-ownership.md)
+§"Example: nested parallelism in hataori".
 
-**Scope:** the tenferro-only adapter. tensor4all explicit contexts, tensor
-transport, and tensor reconstruction stay outside this change.
+**Scope:** the tenferro-only adapter. tensor4all contexts, tensor transport, and
+tensor reconstruction stay outside this change.
 
 ## 1. Crate and dependency boundary
 
@@ -19,12 +20,14 @@ transport, and tensor reconstruction stay outside this change.
 
 - local `hataori` with `rayon` enabled (for the `Lanes` contract and
   `pmap_lanes`);
-- `tenferro-cpu` (default features off, **no provider feature**) and
-  `tenferro-tensor` at exactly `74aa7fac`. tenferro-cpu's CPU providers
-  (`native`, `blas`, `provider-inject`, ...) are mutually exclusive, so the
-  consumer selects one through its own tenferro-cpu dependency and Cargo feature
-  unification; the adapter's tests, doctests and examples enable `native` through
-  a dev-dependency only;
+- `tenferro-cpu` (default features off, **no provider feature**) at exactly
+  `5f0ae0a3`. tenferro-cpu's CPU providers (`native`, `blas`,
+  `provider-inject`, ...) are mutually exclusive, so the consumer selects one
+  through its own tenferro-cpu dependency and Cargo feature unification; the
+  adapter's tests, doctests and examples enable `native` through a
+  dev-dependency only;
+- `tenferro-tensor` as a **dev-dependency only**: the adapter itself names no
+  tensor type, and only its tests and example build real tensors;
 - an optional `mpi` feature (`hataori/mpi` plus upstream `mpi`) used only by the
   `pmap_lanes` world-size-1 smoke example.
 
@@ -37,60 +40,71 @@ feature is separate and outside the Rust 1.85 core matrix.
 
 | Layer | Owns | Does not own |
 |---|---|---|
-| tenferro | the CPU pool and its invariants (worker affinity, worker stack), root admission (held session), one owner-inheriting child session per worker lane | which item runs where |
-| hataori | scheduling: work queues, item-to-lane assignment, ordering and error rules, MPI distribution | a pool, a domain, or a thread on the tensor path |
-| application | the per-item function | parallelism machinery |
+| tenferro | an engine's pool and its invariants (worker stack, plan cache, scratch, buffer pool), and the refusal to run an operation from a worker of that same pool | which item runs where, how many engines exist, any thread of its own |
+| hataori | scheduling: work queues, item-to-lane assignment, ordering and error rules, MPI distribution | a compute pool, a session, or an admission hierarchy |
+| caller | the engines: how many lanes, how many workers each engine's pool has, and any CPU placement | scheduling inside a lane |
 
-The adapter is the seam: it opens tenferro's held root session, lends
-tenferro's phase lanes to Hataori's `Lanes` implementation, and maps the two
-cancellation and error vocabularies. It creates no pool, no domain, and no
-thread, installs no thread-local selector, and never gives tenferro a borrowed
-pool. D9 stays intact: the only admission is tenferro's held session.
+The adapter is the seam, and it is now thin: it holds the caller's engines, runs
+one lane body per engine on a thread of its own, and maps the two cancellation
+and error vocabularies. It creates no pool and holds no session.
 
-A lane is one worker of the backend's own pool plus one child session that stays
-open for the whole run, so scratch and prepared plans are reused across the
-items that lane pulls. Lane kernels are not forced to be serial: the child
-session follows tenferro's own lane policy, so a kernel issued from a lane may
-still use the pool. Hataori's contract covers only which item runs on which
-lane; it says nothing about how a kernel uses the pool.
+A lane is one thread the adapter spawns for one run plus the engine lent to it
+for that run. Because a lane thread is not a worker of the engine's pool,
+tenferro's "an operation called from a worker of its engine's own pool is
+refused" rule holds by construction rather than by a runtime check, and a kernel
+issued from a lane may use every worker of that lane's engine.
+
+Two consequences the caller sees:
+
+- **the engine is a value.** It is lent to one lane for one run and handed back;
+  prepared plans, scratch and the buffer pool stay warm in it between runs.
+  Nothing in the adapter outlives the run except the caller's engines;
+- **there is no `close()`.** With sessions gone there is nothing to release
+  except the engines themselves, which the caller owns and drops.
 
 ## 3. Public API
 
 ```rust
-pub struct TenferroLanes<'b> { /* CpuHeldSession<'b> */ }
+pub struct TenferroLanes { /* Vec<tenferro_cpu::CpuEngine> */ }
 
-impl<'b> TenferroLanes<'b> {
-    pub fn open(backend: &'b tenferro_cpu::CpuBackend) -> Result<Self, TenferroAdapterError>;
-    pub fn close(self) -> Result<(), TenferroAdapterError>;
+impl TenferroLanes {
+    pub fn new(engines: Vec<tenferro_cpu::CpuEngine>) -> Result<Self, NoEngine>;
+    pub fn lane_count(&self) -> usize;
 }
 
-impl hataori::Lanes for TenferroLanes<'_> {
-    type Lane<'l> = tenferro_cpu::PhaseLane<'l>;
-    type Error = TenferroAdapterError;
-    // run(lane)                -> held.phase(|p| p.run(..))
-    // run_with_coordinator(..) -> held.phase(|p| p.run_with_coordinator(..))
+impl hataori::Lanes for TenferroLanes {
+    type Lane<'l> = tenferro_cpu::CpuEngine;
+    type Error = LaneThreadError;
+    // run(lane)                 -> one scoped thread per engine
+    // run_with_coordinator(..)  -> the coordinator on the calling thread
 }
 ```
 
-`open` admits the backend's root session for the executor's lifetime and records
-`backend.num_threads()` as the lane count, which is the count tenferro's phase
-will drive. `close` releases the session and reports an affinity-restoration
-failure instead of logging it; dropping the executor performs the same release
-best-effort.
+`new` keeps the engines in the given order: lane `i` is always lent engine `i`.
+It rejects an empty vector with `NoEngine`, because a lane executor without an
+engine could only report that no item was ever evaluated.
 
-The executor is `!Send` exactly like the held session, because admission, the
-execution-owner marker, and the caller's narrowed CPU mask belong to the opening
-thread. A caller that needs to run on another thread opens a new executor there.
+`Self::Error` is `LaneThreadError`, reported as `LanesError::Executor`: the one
+executor-level failure left is a lane thread that could not be started, in which
+case the already-started lanes are cancelled and joined like any other failure.
+`LanesError::SingleLane` and `LanesError::Reentrant` are unreachable here — the
+adapter always has a lane per engine and runs its lanes on its own threads, so
+it can always overlap a coordinator, and it is never driven from one of its own
+workers.
 
-`TenferroAdapterError` has four typed variants that all keep their upstream
-source:
+The caller builds the engines, which is where the machine layout belongs:
 
-| Variant | Meaning |
-|---|---|
-| `Open(SessionEntryError)` | the held root session could not be opened |
-| `Phase(CpuPhaseError)` | tenferro refused to open a phase (for example `TargetPoolCaller`) |
-| `Session(SessionEntryError)` | a lane could not enter or clean up its child session |
-| `Close(CpuHeldSessionError)` | the caller's CPU affinity mask could not be restored |
+```rust
+let engines = (0..lanes)
+    .map(|_| thread_pool_builder().num_threads(threads).build().map(CpuEngine::new))
+    .collect::<Result<Vec<_>, _>>()?;
+let mut lanes = TenferroLanes::new(engines)?;
+```
+
+`thread_pool_builder()` is tenferro's own helper (it presets the worker stack the
+providers need); the worker count, and any placement added through
+`ThreadPoolBuilder`, are the caller's decision. `CpuEngine::serial()` is a valid
+lane engine too and costs no pool at all.
 
 ## 4. One run
 
@@ -100,99 +114,103 @@ adapter needs no queue of its own. (`map_in` takes a Hataori `Domain`, not a
 
 ```text
 hataori::map_in_lanes(map) / pmap_lanes
-  -> Lanes::run                 -> held.phase(|p| p.run(lane))                 (no coordinator)
-  -> Lanes::run_with_coordinator-> held.phase(|p| p.run_with_coordinator(c, lane))
-       lane k = tenferro worker k + child session k
-         loop { item = hataori's next index; f(item, &mut lane); write slot }
+  -> Lanes::run                  -> scope { spawn k lanes }
+  -> Lanes::run_with_coordinator -> scope { spawn k lanes; coordinator on this thread }
+       lane k = its own thread + engine k
+         loop { item = hataori's next index; f(item, &mut engine); write slot }
 ```
 
+`Lanes::run` spawns one scoped thread per engine and joins them in index order.
+A lane thread gets the worker stack tenferro reserves for its own pool workers
+(`tenferro_cpu::DEFAULT_WORKER_STACK_BYTES`), because a lane body runs provider
+code on that thread.
+`run_with_coordinator` spawns the same lanes and then runs the coordinator on the
+calling thread, so the coordinator always overlaps: with a single lane as well.
+The `SingleLane` fallback the hybrid `pmap` used for a one-worker backend is
+therefore gone; `pmap_lanes` executes its batches through the lanes at every
+width.
+
 Every run creates one `LaneControl` and lends it to the lane bodies and to the
-coordinator, and it bridges in both directions:
+coordinator:
 
-- **tenferro to Hataori:** if a lane observes `PhaseLane::cancelled()` when it
-  starts, it marks the Hataori control; a lane body that returns `Err` or
-  unwinds marks it before tenferro joins (an unwind guard also marks it).
-- **Hataori to tenferro:** when the coordinator returns, errors, or unwinds, the
-  Hataori control is cancelled *and* `PhaseControl::cancel()` is called, so
-  lanes that poll either signal stop feeding. This is the `Lanes` contract:
-  "when the coordinator returns, errors, or panics, the control is cancelled and
-  every lane is joined".
-- **tenferro's own stop, without a lane callback:** tenferro can fail a phase
-  before a lane body runs (a child-session entry or cleanup failure), so the
-  executor's stop signal may never reach `run_lane`. The coordinator therefore
-  receives a `LaneControl::with_probe` view of the run's control whose probe is
-  `|| phase_control.cancelled()`. The view shares the run's cancellation flag, so
-  `cancel` from either side still reaches both, and it adds tenferro's own stop
-  to `cancelled()`. A coordinator waiting on `LaneControl` is thereby released
-  instead of waiting forever, and it closes its work queue so the remaining lanes
-  finish.
+- a lane body that returns `Err` cancels the control, and an unwind guard cancels
+  it if the body panics, so a peer waiting on the control is released;
+- the coordinator runs under a guard that cancels the control when it leaves,
+  normally or by panicking, before the lanes are joined. This is the `Lanes`
+  contract: "when the coordinator returns, errors, or panics, the control is
+  cancelled and every lane is joined". This is the signal a *lane* waiting on the
+  control observes; a coordinator that is itself waiting on the control is
+  released by a lane error, a lane panic, or an explicit `cancel`, not by its own
+  exit.
 
-tenferro owns the join: `CpuPhase::run` broadcasts to every worker and
-`run_with_coordinator` runs the coordinator in an `in_place_scope`, so both
-return only after every lane finished, and a lane panic is resumed on the
-calling thread after the join. The adapter does not duplicate that join and
-does not catch panics.
+The adapter owns the join because `std::thread::scope` cannot join elsewhere: all
+lanes are joined in index order, the first lane error is reported as
+`LanesError::Lane`, and a lane or coordinator panic is resumed on the calling
+thread only after every lane was joined and cancelled.
 
-Error mapping keeps the `source()` chain intact:
+Error mapping is direct — there is no intermediate vocabulary left to translate:
 
-| tenferro | Hataori |
+| run outcome | Hataori |
 |---|---|
-| `PhaseRunError::Lane(e)` | `LanesError::Lane(e)` |
-| `PhaseRunError::Coordinator(e)` | `LanesError::Coordinator(e)` |
-| `PhaseRunError::Session(s)` | `LanesError::Executor(TenferroAdapterError::Session(s))` |
-| `PhaseRunError::SingleLane` | `LanesError::SingleLane` |
-| `CpuPhaseError::TargetPoolCaller` (or any phase-open error) | `LanesError::Executor(TenferroAdapterError::Phase(..))` |
+| lane body returned `Err(e)` | `LanesError::Lane(e)` |
+| coordinator returned `Err(e)` while every lane ended cleanly | `LanesError::Coordinator(e)` |
+| lane body panicked | the panic is resumed after the join |
+| coordinator panicked | the panic is resumed after the join |
 
-`SingleLane` is forwarded rather than hidden so the hybrid `pmap` takes its
-documented explicit fallback: a one-worker backend drives its single lane
-inline on the caller, and `pmap_lanes` executes each batch through
-`Lanes::run` between MPI progress steps. `map_in_lanes` needs no fallback,
-because `Lanes::run` supports the inline lane directly.
+## 5. Removed chains
 
-## 5. Removed Phase 20a chain
+tenferro-rs #2206 removed the session layer, so this change removes the
+held-session adapter of hataori-rs#24:
 
-tenferro-rs #2004 (D9) removed borrowing an external pool, so the adapter no
-longer has:
+- `TenferroLanes::open(&CpuBackend)` and `close()`; `CpuBackend`,
+  `CpuHeldSession`, `CpuPhaseError`, `PhaseLane`, `PhaseControl`,
+  `PhaseRunError` and `SessionEntryError` no longer exist upstream;
+- `LanesError::SingleLane` forwarding and the `with_probe` coordinator view: the
+  only stop signal now is the run's own `LaneControl`, because nothing upstream
+  can stop a run without reaching a lane callback;
+- `TenferroAdapterError` and its four `source()`-preserving variants, replaced by
+  the construction-only `NoEngine` and a `LaneThreadError` for a thread that
+  could not be started;
+- `!Send`: engines move with the lane thread instead of belonging to an opening
+  thread, so the executor is an ordinary `Send` value and callers need no
+  per-thread executor.
 
-- `TenferroDomain::new(Domain)`, `domain()`, and the borrowed-pool backend built
-  from `ExternalCpuDomain::new_caller_managed` /
-  `CpuBackend::from_external_managed_domains`;
-- `with_backend` and its per-domain `AtomicBool` `ConcurrentEntry` gate, plus
-  `OutsideDomainPool` pool-membership entry;
-- `MissingPool` and `ExternalDomain` errors, the `LocalMode::Inner`-only entry
-  contract, and the `rayon::ThreadPool` handle the old binding retained.
-
-There is one engine and one admission now, and no adapter-owned entry gate is
-needed: the held session already rejects reentry and contention with typed
-tenferro errors, and lanes cannot open a root session at all.
+tenferro-rs #2004 (D9) had earlier removed borrowing an external pool, so the
+Phase 20a chain (`TenferroDomain`, `with_backend`, `ExternalCpuDomain`,
+`CpuBackend::from_external_managed_domains`, the `ConcurrentEntry` gate and the
+`OutsideDomainPool` check) was already gone. The engine model makes a
+Hataori-owned `Domain` unnecessary as well: a lane pool would have needed a
+declared CPU set, and placement belongs to the caller.
 
 ## 6. Acceptance evidence
 
 `scripts/check-tenferro.sh` is the single entry point. It proves:
 
 - core default and `rayon` trees still contain no tenferro or tensor4all crate;
-- the adapter tree carries exactly the pinned tenferro revision (no older rev,
-  no tensor4all package);
-- `cargo test -p hataori-tenferro` proves, on a two-worker backend:
-  known-value tenferro operations through `map_in_lanes(TenferroLanes)` (every
-  item once, input order preserved, two distinct lane indices, and a worker-name
-  census where every observed worker name starts with `tenferro-cpu-`), the
-  lowest callback-error index, a lane panic that is resumed only after the join
-  with the same session reusable afterwards, and a one-worker backend whose
-  `run_with_coordinator` returns `LanesError::SingleLane` without running either
-  callback while `map_in_lanes` still evaluates every item on the inline lane;
+- the adapter tree carries exactly the pinned tenferro revision and no
+  tensor4all package, and both pinned tenferro crates are checked through
+  `cargo metadata` (`tenferro-tensor` is a dev-dependency now, so it is not in
+  the normal tree);
+- `cargo test -p hataori-tenferro` proves, with two engines of different worker
+  counts: known-value tenferro operations through `map_in_lanes(TenferroLanes)`
+  (every item once, input order preserved), lane `i` lent engine `i` on a
+  distinct thread, never inside that engine's own pool (the pool's
+  `current_thread_index()` is `None` inside the lane, which is exactly tenferro's
+  precondition for issuing an operation) and computing a real `add_read` there,
+  the lowest callback-error index, and a *callback* panic — raised outside an
+  engine operation — that is resumed only after the join with the caller's
+  engines reusable afterwards;
 - direct `Lanes` liveness cases with peers waiting on `LaneControl`: a normal
   coordinator return releases the lanes without an explicit `cancel` (the
   cancellation-on-exit guard is what releases them), and a coordinator error, a
   coordinator panic, a lane error, and a lane unwind each release the waiting
-  peers and join every lane; the core `LaneControl::with_probe` unit test covers
-  the shared flag and the external stop view;
-- the adapter builds no pool and no thread: no worker name outside
-  `tenferro-cpu-*` is observed, and the inline lane runs on the calling thread;
-- `pmap_lanes(TenferroLanes)` succeeds at world size one with an explicit worker
-  count: `--workers 1` asserts one lane and the `LanesError::SingleLane` shape
-  the hybrid `pmap` falls back from, and `--workers 2` (launcher set not to pin
-  the rank) asserts two lanes and the concurrent coordinator;
+  peers and join every lane; a single lane overlaps a coordinator, which the
+  held-session design refused with `SingleLane`;
+- `TenferroLanes::new` rejects an empty engine vector with `NoEngine`, and the
+  lane count is the number of engines;
+- `pmap_lanes(TenferroLanes)` succeeds at world size one with an explicit lane
+  count: `--lanes 1` asserts a single lane with the coordinator overlapping it,
+  and `--lanes 2` (launcher set not to pin the rank) asserts two lanes;
 - `cargo fmt`, all-target clippy with `-D warnings` (with and without the `mpi`
   example feature), rustdoc with `-D warnings`, doctests, the Rust 1.85 core
   checks, and `git diff --check` pass, each stage inside its own process-group
@@ -205,3 +223,9 @@ and any three-repository integration gate (Phase 20c). The repository MPI
 harness (`examples/mpi_*`) belongs to the root `hataori` package and cannot host
 the adapter, because the dependency direction is adapter -> `hataori`; the
 adapter therefore carries its own `mpi`-gated example.
+
+Not measured here: the model costs one scoped thread per lane per run (a run is
+one wave of items, not one item) and adds no per-item synchronization beyond what
+the caller's `Lanes` implementation already had. An engine that panics inside an
+operation is marked broken upstream and is not reusable; only a panic in the
+callback around it leaves the caller's engines intact.

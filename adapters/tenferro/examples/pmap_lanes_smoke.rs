@@ -1,46 +1,44 @@
-//! `pmap_lanes` over one tenferro held session, at world size one.
+//! `pmap_lanes` over caller-held tenferro engines, at world size one.
 //!
-//! Every rank opens its own tenferro backend and held session, then enters the
-//! same hybrid collective. The root owns the input and the ordered output; the
-//! MPI progress loop is the coordinator on the initialization thread while
-//! tenferro phase lanes execute each local batch, so the held session never
-//! leaves the thread that opened it.
+//! Every rank builds its own engines and lane executor, then enters the same
+//! hybrid collective. The root owns the input and the ordered output; the MPI
+//! progress loop is the coordinator on the initialization thread while the
+//! lanes execute each local batch. A lane runs on a thread the adapter owns, so
+//! the coordinator overlaps it whatever the lane count is.
 //!
-//! `--workers N` selects the backend's worker count. With one worker the
-//! executor has one inline lane, so the coordinator run is rejected with
-//! `SingleLane` and `pmap_lanes` takes its documented fallback through
-//! `Lanes::run`. With two or more workers the coordinator overlaps the lanes.
+//! `--lanes N` selects the number of lanes and engines (default 2) and
+//! `--threads M` the workers of each engine's own pool (default 1).
 //!
 //! Build and run at world size one:
 //!
 //! ```sh
 //! cargo build -p hataori-tenferro --features mpi --example pmap_lanes_smoke
-//! mpiexec --oversubscribe --bind-to none -n 1 target/debug/examples/pmap_lanes_smoke --workers 2
-//! mpiexec --oversubscribe -n 1 target/debug/examples/pmap_lanes_smoke --workers 1
+//! mpiexec --oversubscribe --bind-to none -n 1 target/debug/examples/pmap_lanes_smoke --lanes 2
+//! mpiexec --oversubscribe -n 1 target/debug/examples/pmap_lanes_smoke --lanes 1
 //! ```
 //!
 //! `scripts/check-tenferro.sh` runs both shapes and asserts the lane count in
 //! each one instead of relying on the launcher's core binding.
-use hataori::{pmap_lanes, Lanes, LanesError, LocalMode, PmapOptions};
+use hataori::{pmap_lanes, LocalMode, PmapOptions};
 use hataori_tenferro::TenferroLanes;
 use mpi_upstream::environment::Threading;
 use mpi_upstream::traits::Communicator;
 use std::num::NonZeroUsize;
-use tenferro_cpu::CpuBackend;
-use tenferro_tensor::{Tensor, TensorRead};
+use tenferro_cpu::{thread_pool_builder, CpuEngine};
+use tenferro_tensor::{Tensor, TensorElementwise, TensorRead};
 
-fn workers() -> usize {
+fn positive(name: &str, default: usize) -> usize {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
-        if arg == "--workers" {
+        if arg == name {
             return args
                 .next()
-                .expect("--workers needs a value")
+                .unwrap_or_else(|| panic!("{name} needs a value"))
                 .parse()
-                .expect("--workers takes a positive integer");
+                .expect("a positive integer");
         }
     }
-    2
+    default
 }
 
 fn main() {
@@ -53,32 +51,29 @@ fn main() {
     let world = universe.world();
     let rank = world.rank();
 
-    let workers = workers();
-    let backend = CpuBackend::with_threads(workers).expect("tenferro workers");
-    let mut lanes = TenferroLanes::open(&backend).expect("held tenferro session");
+    let lane_count = positive("--lanes", 2);
+    let threads = positive("--threads", 1);
+    let engines = (0..lane_count)
+        .map(|_| {
+            thread_pool_builder()
+                .num_threads(threads)
+                .build()
+                .map(CpuEngine::new)
+                .expect("a Rayon pool for one engine")
+        })
+        .collect();
+    let mut lanes = TenferroLanes::new(engines).expect("at least one lane");
     assert_eq!(
         lanes.lane_count(),
-        workers,
-        "the adapter reports the backend's worker count as its lane count"
+        lane_count,
+        "the adapter reports one lane per engine"
     );
     if rank == 0 {
         eprintln!(
-            "world size {} lane count {}",
+            "world size {} lane count {} engine threads {}",
             world.size(),
-            lanes.lane_count()
-        );
-    }
-
-    if workers == 1 {
-        let rejected = lanes
-            .run_with_coordinator(
-                |_control| Ok::<(), String>(()),
-                |_index, _lane, _control| Ok::<(), String>(()),
-            )
-            .expect_err("a one-lane phase cannot overlap a coordinator");
-        assert!(
-            matches!(rejected, LanesError::SingleLane),
-            "one worker must report the fallback path: {rejected}"
+            lanes.lane_count(),
+            threads
         );
     }
 
@@ -93,10 +88,9 @@ fn main() {
             prefetch: false,
         },
         items,
-        |item, lane| -> Result<f64, String> {
+        |item, engine| -> Result<f64, String> {
             let x = Tensor::from_vec_col_major(vec![1], vec![item]).map_err(|e| e.to_string())?;
-            let sum = lane
-                .session()
+            let sum = engine
                 .add_read(TensorRead::from_tensor(&x), TensorRead::from_tensor(&x))
                 .map_err(|e| e.to_string())?;
             Ok(sum.as_slice::<f64>().map_err(|e| e.to_string())?[0])
@@ -109,6 +103,5 @@ fn main() {
     } else {
         assert_eq!(doubled, None);
     }
-    lanes.close().expect("close the held tenferro session");
     drop(universe);
 }

@@ -1,21 +1,20 @@
 use hataori::{map_in_lanes, Lanes, LanesError, MapInError};
-use hataori_tenferro::TenferroLanes;
-use std::collections::{BTreeMap, BTreeSet};
+use hataori_tenferro::{NoEngine, TenferroLanes};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Barrier, Mutex};
-use tenferro_cpu::{CpuBackend, PhaseLane};
-use tenferro_tensor::{Tensor, TensorRead};
+use tenferro_cpu::{thread_pool_builder, CpuEngine};
+use tenferro_tensor::{Tensor, TensorElementwise, TensorRead};
 
-/// Doubles one value through the lane's own child session.
+/// Doubles one value through the lane's own engine.
 ///
-/// This is a real tenferro operation, not a placeholder: the tensor is built on
-/// the lane's worker and the add runs on that lane's session, so a successful
-/// result also proves the item really executed there.
-fn double_in_lane(item: f64, lane: &mut PhaseLane<'_>) -> Result<f64, String> {
+/// This is a real tenferro operation, not a placeholder: it runs on the engine
+/// lent to the lane, and tenferro refuses an operation issued from a worker of
+/// that engine's own pool, so a successful result also proves the lane runs on
+/// its own thread rather than inside the pool.
+fn double_in_lane(item: f64, engine: &mut CpuEngine) -> Result<f64, String> {
     let x = Tensor::from_vec_col_major(vec![1], vec![item]).map_err(|error| error.to_string())?;
-    let sum = lane
-        .session()
+    let sum = engine
         .add_read(TensorRead::from_tensor(&x), TensorRead::from_tensor(&x))
         .map_err(|error| error.to_string())?;
     let values = sum.as_slice::<f64>().map_err(|error| error.to_string())?;
@@ -25,93 +24,77 @@ fn double_in_lane(item: f64, lane: &mut PhaseLane<'_>) -> Result<f64, String> {
         .ok_or_else(|| "a doubled scalar has one element".to_owned())
 }
 
-fn thread_name() -> String {
-    std::thread::current().name().unwrap_or("").to_owned()
+/// Builds one engine with `threads` workers of its own.
+fn engine(threads: usize) -> CpuEngine {
+    CpuEngine::new(
+        thread_pool_builder()
+            .num_threads(threads)
+            .build()
+            .expect("a Rayon pool for one engine"),
+    )
 }
 
-/// Builds a backend whose lane count the adapter must report and needs two
-/// placeable workers for the multi-lane fixtures.
-fn two_worker_backend() -> CpuBackend {
-    let backend = CpuBackend::with_threads(2).expect("two tenferro workers");
-    assert_eq!(
-        backend.num_threads(),
-        2,
-        "the fixture needs two CPUs the backend can place on"
-    );
-    backend
+/// Two engines whose worker counts differ, so a lane can be told apart by the
+/// engine it was lent.
+fn two_engines() -> Vec<CpuEngine> {
+    vec![engine(2), engine(1)]
 }
 
 #[test]
-fn map_in_lanes_runs_known_values_on_tenferro_workers() {
-    let backend = two_worker_backend();
-    let mut lanes = TenferroLanes::open(&backend).expect("held tenferro session");
-    assert_eq!(lanes.lane_count(), backend.num_threads());
+fn map_in_lanes_runs_known_values_on_the_lanes_engines() {
+    let mut lanes = TenferroLanes::new(two_engines()).expect("two engines");
+    assert_eq!(lanes.lane_count(), 2);
 
     let visits = Mutex::new(Vec::new());
     let items: Vec<usize> = (1..=6).collect();
-    let doubled = map_in_lanes(&mut lanes, items.clone(), |item, lane| {
-        let value = double_in_lane(item as f64, lane)?;
-        visits.lock().unwrap().push((item, value, thread_name()));
+    let doubled = map_in_lanes(&mut lanes, items.clone(), |item, engine| {
+        let value = double_in_lane(item as f64, engine)?;
+        visits.lock().unwrap().push((item, value));
         Ok::<f64, String>(value)
     })
-    .expect("map_in_lanes over tenferro lanes");
+    .expect("map_in_lanes over the lanes' engines");
 
     assert_eq!(doubled, vec![2.0, 4.0, 6.0, 8.0, 10.0, 12.0]);
     let visits = visits.into_inner().unwrap();
     assert_eq!(visits.len(), items.len(), "every item runs exactly once");
-    let seen: BTreeMap<usize, usize> = visits.iter().fold(BTreeMap::new(), |mut seen, visit| {
-        *seen.entry(visit.0).or_default() += 1;
-        seen
-    });
-    for item in &items {
-        assert_eq!(seen.get(item), Some(&1), "item {item} ran exactly once");
-    }
     for visit in &visits {
         assert_eq!(visit.1, visit.0 as f64 * 2.0);
-        assert!(
-            visit.2.starts_with("tenferro-cpu-"),
-            "work runs on a tenferro worker, not on {0:?}",
-            visit.2
-        );
     }
+}
 
-    // The lane index and worker binding are visible through `Lanes::run`; the
-    // adapter creates no worker of its own, so every index names a tenferro
-    // worker and the two indices are distinct workers.
-    let by_index = Mutex::new(BTreeMap::new());
+#[test]
+fn each_lane_is_lent_its_own_engine_on_its_own_thread() {
+    let mut lanes = TenferroLanes::new(two_engines()).expect("two engines");
+    let seen = Mutex::new(Vec::new());
     lanes
-        .run(|index, lane, control| {
+        .run(|index, engine, control| {
             assert!(!control.cancelled());
-            assert!(!lane.cancelled());
-            let worker = thread_name();
-            assert!(
-                worker.starts_with("tenferro-cpu-"),
-                "lane {index} ran on {worker:?}"
-            );
-            by_index.lock().unwrap().insert(index, worker);
+            // A lane is never a worker of the pool it is about to use, which is
+            // tenferro's own precondition for issuing an operation.
+            let in_own_pool = engine
+                .pool()
+                .and_then(|pool| pool.current_thread_index())
+                .is_some();
+            assert!(!in_own_pool, "lane {index} runs inside its engine's pool");
+            seen.lock()
+                .unwrap()
+                .push((index, engine.num_threads(), std::thread::current().id()));
             Ok::<(), String>(())
         })
         .expect("lane census");
-    let by_index = by_index.into_inner().unwrap();
-    assert_eq!(
-        by_index.keys().copied().collect::<BTreeSet<_>>(),
-        BTreeSet::from([0, 1])
-    );
-    assert_eq!(
-        by_index.values().collect::<BTreeSet<_>>().len(),
-        2,
-        "lane indices name distinct workers"
-    );
-
-    lanes.close().expect("close the held session");
+    let mut seen = seen.into_inner().unwrap();
+    seen.sort_by_key(|row| row.0);
+    assert_eq!(seen.len(), 2);
+    assert_eq!((seen[0].0, seen[0].1), (0, 2), "lane 0 holds engine 0");
+    assert_eq!((seen[1].0, seen[1].1), (1, 1), "lane 1 holds engine 1");
+    assert_ne!(seen[0].2, seen[1].2, "lanes run on distinct threads");
 }
 
 #[test]
 fn map_in_lanes_reports_the_lowest_failing_index() {
-    let backend = two_worker_backend();
-    let mut lanes = TenferroLanes::open(&backend).expect("held tenferro session");
-    let error = map_in_lanes(&mut lanes, vec![0_usize, 1, 2, 3, 4], |item, lane| {
-        double_in_lane(item as f64, lane)?;
+    let mut lanes = TenferroLanes::new(two_engines()).expect("two engines");
+    let error = map_in_lanes(&mut lanes, vec![0_usize, 1, 2, 3, 4], |item, engine| {
+        double_in_lane(item as f64, engine)?;
         if item == 1 || item == 3 {
             return Err(format!("item {item} failed"));
         }
@@ -122,116 +105,111 @@ fn map_in_lanes_reports_the_lowest_failing_index() {
         MapInError::Callback(error) => assert_eq!(error.index(), 1, "{error}"),
         other => panic!("expected a callback error, got {other}"),
     }
-    lanes.close().expect("close the held session");
 }
 
 #[test]
-fn lane_panic_joins_and_the_session_is_reusable() {
-    let backend = two_worker_backend();
-    let mut lanes = TenferroLanes::open(&backend).expect("held tenferro session");
+fn lane_panic_joins_and_the_executor_is_reusable() {
+    let mut lanes = TenferroLanes::new(two_engines()).expect("two engines");
     let panic = catch_unwind(AssertUnwindSafe(|| {
-        let _ = map_in_lanes(&mut lanes, vec![0_usize, 1, 2, 3], |item, lane| {
-            double_in_lane(item as f64, lane)?;
+        let _ = map_in_lanes(&mut lanes, vec![0_usize, 1, 2, 3], |item, engine| {
+            double_in_lane(item as f64, engine)?;
             assert!(item < 2, "fixture panic on item {item}");
             Ok::<f64, String>(item as f64)
         });
     }));
     assert!(panic.is_err(), "the lane panic is resumed on the caller");
 
-    // The phase joined every lane before resuming, and the held session is
-    // still admitted and warm for the next fan-out.
-    let lanes_run = AtomicUsize::new(0);
-    let doubled = map_in_lanes(&mut lanes, vec![2_usize, 3], |item, lane| {
-        lanes_run.fetch_add(1, Ordering::AcqRel);
-        double_in_lane(item as f64, lane)
+    // Every lane was joined before the panic was resumed, and the caller's
+    // engines are still usable for the next fan-out.
+    let runs = AtomicUsize::new(0);
+    let doubled = map_in_lanes(&mut lanes, vec![2_usize, 3], |item, engine| {
+        runs.fetch_add(1, Ordering::AcqRel);
+        double_in_lane(item as f64, engine)
     })
-    .expect("the session is reusable after a lane panic");
+    .expect("the engines are reusable after a lane panic");
     assert_eq!(doubled, vec![4.0, 6.0]);
-    assert_eq!(lanes_run.load(Ordering::Acquire), 2);
-    lanes.close().expect("close the held session");
+    assert_eq!(runs.load(Ordering::Acquire), 2);
 }
 
 #[test]
-fn one_worker_backend_rejects_a_coordinator_and_runs_one_inline_lane() {
-    let backend = CpuBackend::with_threads(1).expect("one tenferro worker");
-    let mut lanes = TenferroLanes::open(&backend).expect("held tenferro session");
+fn the_lane_count_is_the_number_of_engines() {
+    assert_eq!(
+        TenferroLanes::new(Vec::new()).unwrap_err(),
+        NoEngine,
+        "a lane executor needs an engine"
+    );
+    let one = TenferroLanes::new(vec![engine(1)]).expect("one engine");
+    assert_eq!(one.lane_count(), 1);
+    let three = TenferroLanes::new(vec![engine(1), engine(1), engine(1)]).expect("three engines");
+    assert_eq!(three.lane_count(), 3);
+}
+
+#[test]
+fn one_lane_still_overlaps_a_coordinator() {
+    let mut lanes = TenferroLanes::new(vec![engine(1)]).expect("one engine");
     assert_eq!(lanes.lane_count(), 1);
 
-    let coordinator_ran = AtomicUsize::new(0);
-    let lane_ran = AtomicUsize::new(0);
-    let error = lanes
+    // A lane runs on a thread the adapter owns, so the coordinator can always
+    // overlap it, whatever the width.
+    // Neither party can pass the barrier alone, so reaching it proves the
+    // coordinator overlapped the lane.
+    let started = Barrier::new(2);
+    let coordinator_saw = lanes
         .run_with_coordinator(
             |_control| {
-                coordinator_ran.fetch_add(1, Ordering::AcqRel);
-                Ok::<(), String>(())
+                started.wait();
+                Ok::<usize, String>(7)
             },
-            |_index, _lane, _control| {
-                lane_ran.fetch_add(1, Ordering::AcqRel);
+            |_index, engine, control| {
+                assert_eq!(engine.num_threads(), 1);
+                started.wait();
+                while !control.cancelled() {
+                    std::thread::yield_now();
+                }
                 Ok::<(), String>(())
             },
         )
-        .expect_err("a one-lane phase cannot overlap a coordinator");
-    assert!(matches!(error, LanesError::SingleLane), "{error}");
-    assert_eq!(coordinator_ran.load(Ordering::Acquire), 0);
-    assert_eq!(lane_ran.load(Ordering::Acquire), 0);
+        .expect("a single lane overlaps the coordinator");
+    assert_eq!(coordinator_saw, 7);
 
-    // `map_in_lanes` goes through `Lanes::run`, so the single lane runs inline
-    // on the calling thread.
-    let caller = thread_name();
-    let workers = Mutex::new(BTreeSet::new());
-    let doubled = map_in_lanes(&mut lanes, vec![1_usize, 2, 3], |item, lane| {
-        workers.lock().unwrap().insert(thread_name());
-        double_in_lane(item as f64, lane)
+    let doubled = map_in_lanes(&mut lanes, vec![1_usize, 2, 3], |item, engine| {
+        double_in_lane(item as f64, engine)
     })
-    .expect("the inline lane still evaluates every item");
+    .expect("the single lane still evaluates every item");
     assert_eq!(doubled, vec![2.0, 4.0, 6.0]);
-    let workers = workers.into_inner().unwrap();
-    assert_eq!(workers, BTreeSet::from([caller]));
-    lanes.close().expect("close the held session");
 }
 
 #[test]
 fn coordinator_return_releases_the_lanes_without_an_explicit_cancel() {
-    let backend = two_worker_backend();
-    let mut lanes = TenferroLanes::open(&backend).expect("held tenferro session");
-    // The coordinator plus both lanes; the coordinator returns normally only
-    // after every lane is running. No callback cancels the control explicitly:
-    // the executor's cancellation-on-exit and tenferro's own stop signal must
-    // release the lanes.
+    let mut lanes = TenferroLanes::new(two_engines()).expect("two engines");
+    // The coordinator returns normally only after every lane is running, and no
+    // callback cancels the control explicitly: the executor's
+    // cancellation-on-exit must release the waiting lanes.
     let started = Barrier::new(3);
     let exited = AtomicUsize::new(0);
-    let tenferro_cancelled = AtomicUsize::new(0);
     let result = lanes
         .run_with_coordinator(
             |_control| {
                 started.wait();
                 Ok::<usize, String>(17)
             },
-            |_index, lane, control| {
+            |_index, _engine, control| {
                 started.wait();
                 while !control.cancelled() {
                     std::thread::yield_now();
                 }
                 exited.fetch_add(1, Ordering::AcqRel);
-                // The coordinator's exit also sets tenferro's own stop signal.
-                while !lane.cancelled() {
-                    std::thread::yield_now();
-                }
-                tenferro_cancelled.fetch_add(1, Ordering::AcqRel);
                 Ok::<(), String>(())
             },
         )
         .expect("the coordinator result survives the lane release");
     assert_eq!(result, 17);
     assert_eq!(exited.load(Ordering::Acquire), 2);
-    assert_eq!(tenferro_cancelled.load(Ordering::Acquire), 2);
-    lanes.close().expect("close the held session");
 }
 
 #[test]
 fn coordinator_error_releases_waiting_lanes() {
-    let backend = two_worker_backend();
-    let mut lanes = TenferroLanes::open(&backend).expect("held tenferro session");
+    let mut lanes = TenferroLanes::new(two_engines()).expect("two engines");
     let started = Barrier::new(3);
     let exited = AtomicUsize::new(0);
     let error = lanes
@@ -240,7 +218,7 @@ fn coordinator_error_releases_waiting_lanes() {
                 started.wait();
                 Err::<(), String>("coordinator failed".to_owned())
             },
-            |_index, _lane, control| {
+            |_index, _engine, control| {
                 started.wait();
                 while !control.cancelled() {
                     std::thread::yield_now();
@@ -255,13 +233,11 @@ fn coordinator_error_releases_waiting_lanes() {
         "{error}"
     );
     assert_eq!(exited.load(Ordering::Acquire), 2);
-    lanes.close().expect("close the held session");
 }
 
 #[test]
 fn coordinator_panic_releases_waiting_lanes_and_is_resumed() {
-    let backend = two_worker_backend();
-    let mut lanes = TenferroLanes::open(&backend).expect("held tenferro session");
+    let mut lanes = TenferroLanes::new(two_engines()).expect("two engines");
     let started = Barrier::new(3);
     let exited = AtomicUsize::new(0);
     let panic = catch_unwind(AssertUnwindSafe(|| {
@@ -270,7 +246,7 @@ fn coordinator_panic_releases_waiting_lanes_and_is_resumed() {
                 started.wait();
                 panic!("fixture coordinator panic")
             },
-            |_index, _lane, control| {
+            |_index, _engine, control| {
                 started.wait();
                 while !control.cancelled() {
                     std::thread::yield_now();
@@ -282,17 +258,15 @@ fn coordinator_panic_releases_waiting_lanes_and_is_resumed() {
     }));
     assert!(panic.is_err(), "the coordinator panic is resumed");
     assert_eq!(exited.load(Ordering::Acquire), 2);
-    lanes.close().expect("close the held session");
 }
 
 #[test]
 fn lane_error_releases_waiting_peers_and_still_joins() {
-    let backend = two_worker_backend();
-    let mut lanes = TenferroLanes::open(&backend).expect("held tenferro session");
+    let mut lanes = TenferroLanes::new(two_engines()).expect("two engines");
     let started = Barrier::new(2);
     let exited = AtomicUsize::new(0);
     let error = lanes
-        .run(|index, _lane, control| {
+        .run(|index, _engine, control| {
             started.wait();
             if index == 0 {
                 return Err("lane zero failed".to_owned());
@@ -309,17 +283,15 @@ fn lane_error_releases_waiting_peers_and_still_joins() {
         "{error}"
     );
     assert_eq!(exited.load(Ordering::Acquire), 1);
-    lanes.close().expect("close the held session");
 }
 
 #[test]
 fn lane_unwind_releases_waiting_peers_and_is_resumed() {
-    let backend = two_worker_backend();
-    let mut lanes = TenferroLanes::open(&backend).expect("held tenferro session");
+    let mut lanes = TenferroLanes::new(two_engines()).expect("two engines");
     let started = Barrier::new(2);
     let exited = AtomicUsize::new(0);
     let panic = catch_unwind(AssertUnwindSafe(|| {
-        let _ = lanes.run(|index, _lane, control| {
+        let _ = lanes.run(|index, _engine, control| {
             started.wait();
             assert!(index != 0, "fixture lane panic");
             while !control.cancelled() {
@@ -331,5 +303,4 @@ fn lane_unwind_releases_waiting_peers_and_is_resumed() {
     }));
     assert!(panic.is_err(), "the lane panic is resumed after the join");
     assert_eq!(exited.load(Ordering::Acquire), 1);
-    lanes.close().expect("close the held session");
 }

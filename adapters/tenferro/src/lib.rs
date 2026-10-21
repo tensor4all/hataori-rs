@@ -1,233 +1,205 @@
-//! Hataori [`Lanes`] over one tenferro held CPU session.
+//! Hataori [`Lanes`] over the caller's tenferro CPU [`CpuEngine`]s.
 //!
-//! tenferro owns the CPU pool, admission, and one owner-inheriting child session
-//! per worker of that pool; Hataori owns which item runs where. Opening a
-//! [`TenferroLanes`] takes tenferro's held root session, and each Hataori lane is
-//! one worker of the backend's own pool plus that worker's child session.
+//! Hataori owns which item runs where and tenferro owns nothing but the engine
+//! a lane runs on. The caller builds one engine per lane — each with its own
+//! Rayon pool, sized by the caller — and this adapter runs the lanes on threads
+//! of its own. A lane thread is never a worker of any lane's engine pool, so
+//! tenferro's "never called from one of its engine's own workers" rule holds by
+//! construction rather than by a runtime check.
 //!
-//! The adapter creates no pool, no domain, and no thread, installs no
-//! thread-local selector, and never hands tenferro a borrowed pool. The held
-//! session stays on the thread that opened it, so [`TenferroLanes`] is `!Send`
-//! exactly like [`tenferro_cpu::CpuHeldSession`].
-//!
-//! Cancellation is bridged in both directions. A lane that fails, unwinds, or
-//! starts after tenferro stopped the phase cancels the Hataori
-//! [`LaneControl`]; a coordinator that returns, fails, or panics cancels that
-//! control and tenferro's phase control. The coordinator also receives a
-//! probe view of the control (`LaneControl::with_probe`) that follows
-//! tenferro's own stop signal, so a phase that fails before any lane body runs
-//! (a child-session entry or cleanup failure) still releases a coordinator
-//! waiting on cancellation.
+//! The adapter creates no pool, no session, and no thread-local state. An
+//! engine is an ordinary value: it is lent to one lane for the length of one
+//! run and returned to the caller's vector afterwards, so a run costs one
+//! thread per lane and nothing is held between runs.
 //!
 //! # Examples
 //!
-//! ```
-//! use hataori::map_in_lanes;
-//! use hataori_tenferro::TenferroLanes;
-//! use tenferro_cpu::CpuBackend;
-//! use tenferro_tensor::{Tensor, TensorRead};
+//! Two lanes, each with its own two-thread engine, doubling three items:
 //!
-//! let backend = CpuBackend::with_threads(2)?;
-//! let mut lanes = TenferroLanes::open(&backend)?;
-//! let doubled = map_in_lanes(&mut lanes, vec![1.0_f64, 2.0, 3.0], |item, lane| {
+//! ```
+//! use hataori::{map_in_lanes, Lanes};
+//! use hataori_tenferro::TenferroLanes;
+//! use tenferro_cpu::{thread_pool_builder, CpuEngine};
+//! use tenferro_tensor::{Tensor, TensorElementwise, TensorRead};
+//!
+//! let engines = (0..2)
+//!     .map(|_| thread_pool_builder().num_threads(2).build().map(CpuEngine::new))
+//!     .collect::<Result<Vec<_>, _>>()?;
+//! let mut lanes = TenferroLanes::new(engines)?;
+//! assert_eq!(lanes.lane_count(), 2);
+//! let doubled = map_in_lanes(&mut lanes, vec![1.0_f64, 2.0, 3.0], |item, engine| {
 //!     let x = Tensor::from_vec_col_major(vec![1], vec![item]).map_err(|e| e.to_string())?;
-//!     let sum = lane
-//!         .session()
+//!     let sum = engine
 //!         .add_read(TensorRead::from_tensor(&x), TensorRead::from_tensor(&x))
 //!         .map_err(|e| e.to_string())?;
 //!     Ok::<f64, String>(sum.as_slice::<f64>().map_err(|e| e.to_string())?[0])
 //! })?;
 //! assert_eq!(doubled, vec![2.0, 4.0, 6.0]);
-//! lanes.close()?;
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
 use hataori::{LaneControl, Lanes, LanesError};
 use std::fmt;
-use tenferro_cpu::{
-    CpuBackend, CpuHeldSession, CpuHeldSessionError, CpuPhaseError, PhaseControl, PhaseLane,
-    PhaseRunError,
-};
-use tenferro_tensor::SessionEntryError;
+use std::thread::{self, ScopedJoinHandle};
+use tenferro_cpu::{CpuEngine, DEFAULT_WORKER_STACK_BYTES};
 
-/// Failure to open, drive, or close a [`TenferroLanes`].
+/// The lane executor was built without an engine.
 ///
 /// # Examples
 ///
 /// ```
-/// use hataori_tenferro::TenferroLanes;
-/// use tenferro_cpu::CpuBackend;
+/// use hataori_tenferro::{NoEngine, TenferroLanes};
 ///
-/// let backend = CpuBackend::with_threads(1)?;
-/// let lanes = TenferroLanes::open(&backend)?;
-/// assert!(lanes.close().is_ok());
-/// // The reservation is released, so a second session is admitted.
-/// let reopened = TenferroLanes::open(&backend)?;
-/// assert!(reopened.close().is_ok());
-/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// assert_eq!(TenferroLanes::new(Vec::new()).unwrap_err(), NoEngine);
+/// ```
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct NoEngine;
+
+impl fmt::Display for NoEngine {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a lane needs an engine and none was given")
+    }
+}
+
+impl std::error::Error for NoEngine {}
+
+/// A lane thread could not be started.
+///
+/// # Examples
+///
+/// ```
+/// use hataori_tenferro::LaneThreadError;
+///
+/// let error = LaneThreadError::from(std::io::Error::other("no thread"));
+/// assert!(error.to_string().contains("lane thread"));
 /// ```
 #[derive(Debug)]
-pub enum TenferroAdapterError {
-    /// tenferro could not open the held root session.
-    Open(SessionEntryError),
-    /// A phase lane could not enter or clean up its child session.
-    Session(SessionEntryError),
-    /// tenferro refused to open a phase over the held session.
-    Phase(CpuPhaseError),
-    /// tenferro could not restore the caller's CPU affinity on close.
-    Close(CpuHeldSessionError),
+pub struct LaneThreadError {
+    source: std::io::Error,
 }
 
-impl fmt::Display for TenferroAdapterError {
+impl From<std::io::Error> for LaneThreadError {
+    fn from(source: std::io::Error) -> Self {
+        Self { source }
+    }
+}
+
+impl fmt::Display for LaneThreadError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Open(error) => {
-                write!(formatter, "could not open a tenferro held session: {error}")
-            }
-            Self::Session(error) => {
-                write!(formatter, "tenferro phase lane session failed: {error}")
-            }
-            Self::Phase(error) => write!(formatter, "could not open a tenferro phase: {error}"),
-            Self::Close(error) => {
-                write!(
-                    formatter,
-                    "could not close the tenferro held session: {error}"
-                )
-            }
-        }
+        write!(formatter, "could not start a lane thread: {}", self.source)
     }
 }
 
-impl std::error::Error for TenferroAdapterError {
+impl std::error::Error for LaneThreadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Open(error) | Self::Session(error) => Some(error),
-            Self::Phase(error) => Some(error),
-            Self::Close(error) => Some(error),
-        }
+        Some(&self.source)
     }
 }
 
-/// Hataori lanes over one tenferro held session.
+/// Hataori lanes over the caller's tenferro CPU engines.
 ///
-/// Opening the executor admits the backend's root session for its whole
-/// lifetime. Each [`Lanes::run`] borrows a phase from that session, so lanes are
-/// workers of the backend's own pool and every lane keeps one child session warm
-/// across the items it pulls. The executor holds no queue of its own: Hataori
-/// pulls items from its own scheduler and hands them to the lane callback.
-///
-/// The held session keeps tenferro's execution admission, its execution-owner
-/// marker, and the caller's narrowed CPU affinity on the opening thread, so the
-/// executor is `!Send` and never migrates. Closing it reports an affinity
-/// restoration failure; dropping it performs the same release best-effort.
+/// One lane per engine, in the order the engines were given. The executor holds
+/// no lane resource of its own: [`Lanes::run`] lends engine `i` to lane `i` and
+/// takes it back when every lane has been joined.
 ///
 /// # Examples
 ///
 /// ```
 /// use hataori::{Lanes, LaneControl};
 /// use hataori_tenferro::TenferroLanes;
-/// use tenferro_cpu::CpuBackend;
-/// use tenferro_tensor::{Tensor, TensorRead};
+/// use std::sync::atomic::{AtomicUsize, Ordering};
+/// use tenferro_cpu::{thread_pool_builder, CpuEngine};
 ///
-/// let backend = CpuBackend::with_threads(2)?;
-/// let mut lanes = TenferroLanes::open(&backend)?;
-/// assert_eq!(lanes.lane_count(), 2);
-/// let x = Tensor::from_vec_col_major(vec![1], vec![5.0_f64])?;
-/// let total = std::sync::atomic::AtomicUsize::new(0);
-/// lanes.run(|_index, lane, control| {
-///     let _ = (control, lane.cancelled());
-///     let value = lane
-///         .session()
-///         .add_read(TensorRead::from_tensor(&x), TensorRead::from_tensor(&x))
-///         .map_err(|error| error.to_string())?;
-///     assert_eq!(value.as_slice::<f64>().map_err(|error| error.to_string())?, &[10.0]);
-///     total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-///     Ok::<(), String>(())
-/// })
-/// .expect("lane fan-out");
-/// assert_eq!(total.into_inner(), 2);
-/// lanes.close()?;
+/// let engine = CpuEngine::new(thread_pool_builder().num_threads(1).build()?);
+/// let mut lanes = TenferroLanes::new(vec![engine])?;
+/// let entered = AtomicUsize::new(0);
+/// lanes.run(|index, engine, control| {
+///     let _ = (index, engine.num_threads(), control.cancelled());
+///     entered.fetch_add(1, Ordering::AcqRel);
+///     Ok::<(), std::convert::Infallible>(())
+/// })?;
+/// assert_eq!(entered.into_inner(), 1);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub struct TenferroLanes<'b> {
-    session: CpuHeldSession<'b>,
-    lane_count: usize,
+pub struct TenferroLanes {
+    engines: Vec<CpuEngine>,
 }
 
-impl fmt::Debug for TenferroLanes<'_> {
+impl fmt::Debug for TenferroLanes {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("TenferroLanes")
-            .field("lane_count", &self.lane_count)
+            .field("lane_count", &self.engines.len())
+            .field("engines", &self.engines)
             .finish_non_exhaustive()
     }
 }
 
-impl<'b> TenferroLanes<'b> {
-    /// Opens tenferro's held root session on `backend`.
+impl TenferroLanes {
+    /// Makes one lane per engine, keeping the engines' order.
     ///
-    /// The caller builds and owns the backend. This creates no pool, domain, or
-    /// thread, and it takes no Hataori domain: Hataori schedules items, tenferro
-    /// owns admission and the workers that run them.
+    /// The caller owns the pools: build each engine with
+    /// [`tenferro_cpu::thread_pool_builder`] and the worker count it wants. The
+    /// adapter never resizes, replaces, or drops an engine's pool, and it adds
+    /// no compute threads of its own beyond the lane threads a run needs.
     ///
     /// # Errors
     ///
-    /// Returns [`TenferroAdapterError::Open`] with tenferro's typed session
-    /// entry error when a CPU execution is already active on this thread,
-    /// another held session owns the backend's resources, or the caller's CPU
-    /// mask cannot be narrowed.
+    /// Returns [`NoEngine`] when `engines` is empty: a lane executor without an
+    /// engine could only report that no item was ever evaluated.
     ///
     /// # Examples
     ///
     /// ```
-    /// use hataori::Lanes;
     /// use hataori_tenferro::TenferroLanes;
-    /// use tenferro_cpu::CpuBackend;
+    /// use tenferro_cpu::CpuEngine;
     ///
-    /// let backend = CpuBackend::with_threads(2)?;
-    /// let lanes = TenferroLanes::open(&backend)?;
+    /// let lanes = TenferroLanes::new(vec![CpuEngine::serial(), CpuEngine::serial()])?;
     /// assert_eq!(lanes.lane_count(), 2);
-    /// lanes.close()?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn open(backend: &'b CpuBackend) -> Result<Self, TenferroAdapterError> {
-        let session = backend.open_session().map_err(TenferroAdapterError::Open)?;
-        Ok(Self {
-            session,
-            // A phase drives one lane per worker of the backend's own pool, and
-            // a one-worker backend drives its single lane inline.
-            lane_count: backend.num_threads(),
-        })
+    pub fn new(engines: Vec<CpuEngine>) -> Result<Self, NoEngine> {
+        if engines.is_empty() {
+            return Err(NoEngine);
+        }
+        Ok(Self { engines })
     }
 
-    /// Closes the held session and reports a failed affinity restoration.
-    ///
-    /// Releasing resources, the execution-owner marker, and the admission
-    /// reservation cannot fail; only restoring the caller's CPU mask can, and
-    /// that failure is reported here instead of being logged.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TenferroAdapterError::Close`] with
-    /// [`tenferro_cpu::CpuHeldSessionError::Restore`] when the caller's CPU
-    /// affinity mask cannot be restored. Everything else is released either way.
+    /// Returns the number of lanes, one per engine.
     ///
     /// # Examples
     ///
     /// ```
     /// use hataori_tenferro::TenferroLanes;
-    /// use tenferro_cpu::CpuBackend;
+    /// use tenferro_cpu::CpuEngine;
     ///
-    /// let backend = CpuBackend::with_threads(1)?;
-    /// TenferroLanes::open(&backend)?.close()?;
+    /// assert_eq!(TenferroLanes::new(vec![CpuEngine::serial()])?.lane_count(), 1);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn close(self) -> Result<(), TenferroAdapterError> {
-        self.session.close().map_err(TenferroAdapterError::Close)
+    pub fn lane_count(&self) -> usize {
+        self.engines.len()
+    }
+
+    /// Starts one lane thread per engine, in engine order.
+    fn start_lanes<'scope, 'env, E: Send + 'env>(
+        &'env mut self,
+        scope: &'scope thread::Scope<'scope, 'env>,
+        control: &'env LaneControl<'env>,
+        body: &'env LaneBody<'env, E>,
+    ) -> Result<Vec<ScopedJoinHandle<'scope, Result<(), E>>>, LaneThreadError> {
+        let mut handles = Vec::with_capacity(self.engines.len());
+        for (index, engine) in self.engines.iter_mut().enumerate() {
+            handles.push(
+                thread::Builder::new()
+                    .stack_size(DEFAULT_WORKER_STACK_BYTES)
+                    .spawn_scoped(scope, move || run_lane(control, engine, index, body))?,
+            );
+        }
+        Ok(handles)
     }
 }
 
-/// Cancels the Hataori control if the lane unwinds.
+/// Cancels the shared control if the lane body unwinds.
 struct CancelOnUnwind<'a, 'b>(&'a LaneControl<'b>);
 
 impl Drop for CancelOnUnwind<'_, '_> {
@@ -238,40 +210,29 @@ impl Drop for CancelOnUnwind<'_, '_> {
     }
 }
 
-/// Stops a phase's lanes when the coordinator returns, errors, or unwinds.
+/// Cancels the shared control when the coordinator leaves, either way.
 ///
-/// The coordinator's own exit is the end of the work it can feed, and the
-/// Hataori contract also cancels the shared control at that point. tenferro's
-/// `PhaseControl::cancel` is the signal its lanes observe, so both sides are set
-/// on every exit path including unwinding.
-struct CancelPhaseOnExit<'a, 'b, 'c, 'd> {
-    control: &'a LaneControl<'b>,
-    phase: &'c PhaseControl<'d>,
-}
+/// The coordinator's exit is the end of the work it can feed, and it may leave
+/// by panicking, in which case the lanes must be stopped before the join.
+struct CancelOnExit<'a, 'b>(&'a LaneControl<'b>);
 
-impl Drop for CancelPhaseOnExit<'_, '_, '_, '_> {
+impl Drop for CancelOnExit<'_, '_> {
     fn drop(&mut self) {
-        self.control.cancel();
-        self.phase.cancel();
+        self.0.cancel();
     }
 }
 
-/// Runs one Hataori lane body on one tenferro lane.
-///
-/// tenferro's lane stop signal and Hataori's control are bridged in both
-/// directions: a lane that tenferro already cancelled marks the Hataori control,
-/// and a lane body that fails or unwinds marks it before the join.
+type LaneBody<'a, E> = dyn Fn(usize, &mut CpuEngine, &LaneControl<'_>) -> Result<(), E> + Sync + 'a;
+
+/// Runs one lane body on one engine, stopping the other lanes if it fails.
 fn run_lane<E>(
     control: &LaneControl<'_>,
-    lane_resource: &mut PhaseLane<'_>,
+    engine: &mut CpuEngine,
     index: usize,
-    lane_body: &(impl Fn(usize, &mut PhaseLane<'_>, &LaneControl<'_>) -> Result<(), E> + Sync),
+    body: &LaneBody<'_, E>,
 ) -> Result<(), E> {
-    if lane_resource.cancelled() {
-        control.cancel();
-    }
     let _unwind = CancelOnUnwind(control);
-    match lane_body(index, lane_resource, control) {
+    match body(index, engine, control) {
         Ok(()) => Ok(()),
         Err(error) => {
             control.cancel();
@@ -280,74 +241,91 @@ fn run_lane<E>(
     }
 }
 
-/// Maps tenferro's phase outcome onto the Hataori lanes outcome, keeping sources.
-fn phase_error<E>(error: PhaseRunError<E>) -> LanesError<E, TenferroAdapterError> {
-    match error {
-        PhaseRunError::Lane(error) => LanesError::Lane(error),
-        PhaseRunError::Coordinator(error) => LanesError::Coordinator(error),
-        PhaseRunError::Session(error) => LanesError::Executor(TenferroAdapterError::Session(error)),
-        PhaseRunError::SingleLane { .. } => LanesError::SingleLane,
+/// Joins every lane, reporting the first lane error and resuming the first panic.
+fn join_lanes<E: Send>(
+    handles: Vec<ScopedJoinHandle<'_, Result<(), E>>>,
+    control: &LaneControl<'_>,
+) -> Result<(), LanesError<E, LaneThreadError>> {
+    let mut outcome = Ok(());
+    let mut panicked = None;
+    for handle in handles {
+        match handle.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                control.cancel();
+                if outcome.is_ok() {
+                    outcome = Err(LanesError::Lane(error));
+                }
+            }
+            Err(payload) => {
+                control.cancel();
+                if panicked.is_none() {
+                    panicked = Some(payload);
+                }
+            }
+        }
+    }
+    match panicked {
+        Some(payload) => std::panic::resume_unwind(payload),
+        None => outcome,
     }
 }
 
-/// A phase that could not be opened is an executor failure, not a lane one.
-fn executor_error<E>(error: CpuPhaseError) -> LanesError<E, TenferroAdapterError> {
-    LanesError::Executor(TenferroAdapterError::Phase(error))
-}
-
-impl Lanes for TenferroLanes<'_> {
-    type Lane<'l> = PhaseLane<'l>;
-    type Error = TenferroAdapterError;
+impl Lanes for TenferroLanes {
+    type Lane<'l> = CpuEngine;
+    type Error = LaneThreadError;
 
     fn lane_count(&self) -> usize {
-        self.lane_count
+        self.engines.len()
     }
 
     fn run<E: Send>(
         &mut self,
-        lane: impl Fn(usize, &mut PhaseLane<'_>, &LaneControl<'_>) -> Result<(), E> + Sync,
+        lane: impl Fn(usize, &mut CpuEngine, &LaneControl<'_>) -> Result<(), E> + Sync,
     ) -> Result<(), LanesError<E, Self::Error>> {
         let control = LaneControl::new();
-        let outcome = self.session.phase(|phase| {
-            phase.run(|index, lane_resource| run_lane(&control, lane_resource, index, &lane))
-        });
-        match outcome {
-            Ok(result) => result.map_err(phase_error),
-            Err(error) => Err(executor_error(error)),
-        }
+        let control_ref = &control;
+        let body: &LaneBody<'_, E> = &lane;
+        thread::scope(|scope| {
+            let handles = match self.start_lanes(scope, control_ref, body) {
+                Ok(handles) => handles,
+                Err(error) => {
+                    // The lanes already running have nothing left to feed them,
+                    // so they are cancelled and the scope's own join returns.
+                    control_ref.cancel();
+                    return Err(LanesError::Executor(error));
+                }
+            };
+            join_lanes(handles, control_ref)
+        })
     }
 
     fn run_with_coordinator<C, E: Send>(
         &mut self,
         coordinator: impl FnOnce(&LaneControl<'_>) -> Result<C, E>,
-        lane: impl Fn(usize, &mut PhaseLane<'_>, &LaneControl<'_>) -> Result<(), E> + Sync,
+        lane: impl Fn(usize, &mut CpuEngine, &LaneControl<'_>) -> Result<(), E> + Sync,
     ) -> Result<C, LanesError<E, Self::Error>> {
         let control = LaneControl::new();
-        // The coordinator closure must own `coordinator`, while both closures
-        // share the one control's cancellation flag by reference.
         let control_ref = &control;
-        let outcome = self.session.phase(|phase| {
-            phase.run_with_coordinator(
-                move |phase_control| {
-                    // tenferro can stop a phase without reaching a lane body (a
-                    // child-session entry or cleanup failure). The coordinator
-                    // observes that stop through a probe view of the same
-                    // control, so its waits on `LaneControl` cannot outlive the
-                    // phase.
-                    let probe = || phase_control.cancelled();
-                    let probed = control_ref.with_probe(&probe);
-                    let _stop = CancelPhaseOnExit {
-                        control: &probed,
-                        phase: phase_control,
-                    };
-                    coordinator(&probed)
-                },
-                |index, lane_resource| run_lane(control_ref, lane_resource, index, &lane),
-            )
-        });
-        match outcome {
-            Ok(result) => result.map_err(phase_error),
-            Err(error) => Err(executor_error(error)),
-        }
+        let body: &LaneBody<'_, E> = &lane;
+        thread::scope(|scope| {
+            let handles = match self.start_lanes(scope, control_ref, body) {
+                Ok(handles) => handles,
+                Err(error) => {
+                    // The lanes already running have nothing left to feed them,
+                    // so they are cancelled and the scope's own join returns.
+                    control_ref.cancel();
+                    return Err(LanesError::Executor(error));
+                }
+            };
+            // The coordinator runs on the calling thread while the lanes run.
+            // Its exit cancels them, so a waiting lane cannot outlive it.
+            let coordinated = {
+                let _stop = CancelOnExit(control_ref);
+                coordinator(control_ref)
+            };
+            join_lanes(handles, control_ref)?;
+            coordinated.map_err(LanesError::Coordinator)
+        })
     }
 }
