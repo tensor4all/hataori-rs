@@ -9,7 +9,7 @@ scripts/check-tenferro.sh
 | Contract | Evidence |
 |---|---|
 | Core default and Rayon builds contain no tenferro/tensor4all | root `cargo tree` assertions |
-| Adapter pins tenferro-rs `5f0ae0a3` (caller-held engines, no sessions) and contains no tensor4all | adapter tree and `cargo metadata` pin assertions |
+| Adapter pins tenferro-rs `062298519` (caller-held engines, no sessions) and contains no tensor4all | adapter tree and `cargo metadata` pin assertions |
 | Core retains Rust 1.85; adapter declares `rust-version = "1.96"` matching the pinned tenferro-rs workspace | `check-tenferro.sh` runs `cargo +1.85.0 check` for core only; the adapter is checked on current stable, and no separate 1.96 toolchain check exists |
 | The caller owns the engines and their pools; the adapter builds neither | adapter has no pool constructor and no Rayon dependency of its own; `TenferroLanes::new` takes the caller's `Vec<CpuEngine>` |
 | One lane per engine, in the caller's order | `each_lane_is_lent_its_own_engine_on_its_own_thread` census over two engines of different worker counts |

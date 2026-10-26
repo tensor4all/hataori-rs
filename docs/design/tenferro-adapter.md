@@ -6,7 +6,7 @@ design of hataori-rs#24, which tenferro-rs no longer supports.
 **Upstream contract:** tenferro-rs
 [#2206](https://github.com/tensor4all/tenferro-rs/issues/2206) (caller-held
 engines, no sessions, no tenferro-owned threads) and its implementation
-`5f0ae0a3e58b38ff45c25efff577a7d2a6a95b30`. The cross-repository model is
+`06229851913c81721f29faea6893ad0a6da9ee8d`. The cross-repository model is
 tensor4all-meta
 [`docs/design/core-boundary-and-execution-ownership.md`](https://github.com/tensor4all/tensor4all-meta/blob/main/docs/design/core-boundary-and-execution-ownership.md)
 §"Example: nested parallelism in hataori".
@@ -21,7 +21,7 @@ tensor reconstruction stay outside this change.
 - local `hataori` with `rayon` enabled (for the `Lanes` contract and
   `pmap_lanes`);
 - `tenferro-cpu` (default features off, **no provider feature**) at exactly
-  `5f0ae0a3`. tenferro-cpu's CPU providers (`native`, `blas`,
+  `062298519`. tenferro-cpu's CPU providers (`native`, `blas`,
   `provider-inject`, ...) are mutually exclusive, so the consumer selects one
   through its own tenferro-cpu dependency and Cargo feature unification; the
   adapter's tests, doctests and examples enable `native` through a
