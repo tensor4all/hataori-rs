@@ -6,7 +6,7 @@ design of hataori-rs#24, which tenferro-rs no longer supports.
 **Upstream contract:** tenferro-rs
 [#2206](https://github.com/tensor4all/tenferro-rs/issues/2206) (caller-held
 engines, no sessions, no tenferro-owned threads) and its implementation
-`06229851913c81721f29faea6893ad0a6da9ee8d`. The cross-repository model is
+`e7edd899def8b80df81f2249a7c3b79d64ea592d`. The cross-repository model is
 tensor4all-meta
 [`docs/design/core-boundary-and-execution-ownership.md`](https://github.com/tensor4all/tensor4all-meta/blob/main/docs/design/core-boundary-and-execution-ownership.md)
 §"Example: nested parallelism in hataori".
@@ -96,15 +96,15 @@ The caller builds the engines, which is where the machine layout belongs:
 
 ```rust
 let engines = (0..lanes)
-    .map(|_| thread_pool_builder().num_threads(threads).build().map(CpuEngine::new))
+    .map(|_| Pool::builder().threads(threads).build().map(CpuEngine::new))
     .collect::<Result<Vec<_>, _>>()?;
 let mut lanes = TenferroLanes::new(engines)?;
 ```
 
-`thread_pool_builder()` is tenferro's own helper (it presets the worker stack the
-providers need); the worker count, and any placement added through
-`ThreadPoolBuilder`, are the caller's decision. `CpuEngine::serial()` is a valid
-lane engine too and costs no pool at all.
+`tenferro_cpu::Pool::builder()` is tenferro's re-export of `strided_exec`'s pool
+builder (it presets the 16 MiB worker stack the providers need); the worker
+count, and any placement added through `on_start`, are the caller's decision.
+`CpuEngine::serial()` is a valid lane engine too and costs no pool at all.
 
 ## 4. One run
 
@@ -121,9 +121,9 @@ hataori::map_in_lanes(map) / pmap_lanes
 ```
 
 `Lanes::run` spawns one scoped thread per engine and joins them in index order.
-A lane thread gets the worker stack tenferro reserves for its own pool workers
-(`tenferro_cpu::DEFAULT_WORKER_STACK_BYTES`), because a lane body runs provider
-code on that thread.
+A lane thread gets the same 16 MiB stack `strided-exec`'s pool default gives
+its workers (`LANE_STACK_BYTES` in the adapter), because a lane body runs
+provider code on that thread; tenferro no longer exports a stack constant.
 `run_with_coordinator` spawns the same lanes and then runs the coordinator on the
 calling thread, so the coordinator always overlaps: with a single lane as well.
 The `SingleLane` fallback the hybrid `pmap` used for a one-worker backend is
