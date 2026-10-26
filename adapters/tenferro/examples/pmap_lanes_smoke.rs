@@ -24,7 +24,7 @@ use hataori_tenferro::TenferroLanes;
 use mpi_upstream::environment::Threading;
 use mpi_upstream::traits::Communicator;
 use std::num::NonZeroUsize;
-use tenferro_cpu::{thread_pool_builder, CpuEngine};
+use tenferro_cpu::{CpuEngine, Pool};
 use tenferro_tensor::{Tensor, TensorElementwise, TensorRead};
 
 fn positive(name: &str, default: usize) -> usize {
@@ -55,8 +55,8 @@ fn main() {
     let threads = positive("--threads", 1);
     let engines = (0..lane_count)
         .map(|_| {
-            thread_pool_builder()
-                .num_threads(threads)
+            Pool::builder()
+                .threads(threads)
                 .build()
                 .map(CpuEngine::new)
                 .expect("a Rayon pool for one engine")

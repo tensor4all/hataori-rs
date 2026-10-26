@@ -2,16 +2,17 @@ use hataori::{map_in_lanes, Lanes, LanesError, MapInError};
 use hataori_tenferro::{NoEngine, TenferroLanes};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Barrier, Mutex};
-use tenferro_cpu::{thread_pool_builder, CpuEngine};
+use std::sync::{Arc, Barrier, Mutex};
+use std::thread::ThreadId;
+use tenferro_cpu::{CpuEngine, Pool};
 use tenferro_tensor::{Tensor, TensorElementwise, TensorRead};
 
 /// Doubles one value through the lane's own engine.
 ///
 /// This is a real tenferro operation, not a placeholder: it runs on the engine
-/// lent to the lane, and tenferro refuses an operation issued from a worker of
-/// that engine's own pool, so a successful result also proves the lane runs on
-/// its own thread rather than inside the pool.
+/// lent to the lane, on a thread that is not one of that pool's workers, so the
+/// providers fan out instead of running serially (strided-exec's scheduler does
+/// not fan out from inside a pool).
 fn double_in_lane(item: f64, engine: &mut CpuEngine) -> Result<f64, String> {
     let x = Tensor::from_vec_col_major(vec![1], vec![item]).map_err(|error| error.to_string())?;
     let sum = engine
@@ -24,14 +25,22 @@ fn double_in_lane(item: f64, engine: &mut CpuEngine) -> Result<f64, String> {
         .ok_or_else(|| "a doubled scalar has one element".to_owned())
 }
 
+/// Builds one engine with `threads` workers of its own, recording the thread id
+/// of every worker it starts.
+fn engine_recording(threads: usize) -> (CpuEngine, Arc<Mutex<Vec<ThreadId>>>) {
+    let workers = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&workers);
+    let pool = Pool::builder()
+        .threads(threads)
+        .on_start(move |_| sink.lock().unwrap().push(std::thread::current().id()))
+        .build()
+        .expect("a pool for one engine");
+    (CpuEngine::new(pool), workers)
+}
+
 /// Builds one engine with `threads` workers of its own.
 fn engine(threads: usize) -> CpuEngine {
-    CpuEngine::new(
-        thread_pool_builder()
-            .num_threads(threads)
-            .build()
-            .expect("a Rayon pool for one engine"),
-    )
+    engine_recording(threads).0
 }
 
 /// Two engines whose worker counts differ, so a lane can be told apart by the
@@ -64,21 +73,24 @@ fn map_in_lanes_runs_known_values_on_the_lanes_engines() {
 
 #[test]
 fn each_lane_is_lent_its_own_engine_on_its_own_thread() {
-    let mut lanes = TenferroLanes::new(two_engines()).expect("two engines");
+    let (lane0, workers0) = engine_recording(2);
+    let (lane1, workers1) = engine_recording(1);
+    let workers = [workers0, workers1];
+    let mut lanes = TenferroLanes::new(vec![lane0, lane1]).expect("two engines");
     let seen = Mutex::new(Vec::new());
     lanes
         .run(|index, engine, control| {
             assert!(!control.cancelled());
-            // A lane is never a worker of the pool it is about to use, which is
-            // tenferro's own precondition for issuing an operation.
-            let in_own_pool = engine
-                .pool()
-                .and_then(|pool| pool.current_thread_index())
-                .is_some();
-            assert!(!in_own_pool, "lane {index} runs inside its engine's pool");
+            // A lane is never a worker of the pool it is about to use, so the
+            // providers on that engine fan out rather than run serially.
+            let thread = std::thread::current().id();
+            assert!(
+                !workers[index].lock().unwrap().contains(&thread),
+                "lane {index} runs inside its engine's pool"
+            );
             seen.lock()
                 .unwrap()
-                .push((index, engine.num_threads(), std::thread::current().id()));
+                .push((index, engine.num_threads(), thread));
             Ok::<(), String>(())
         })
         .expect("lane census");
