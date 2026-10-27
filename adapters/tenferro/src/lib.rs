@@ -44,7 +44,7 @@ use std::thread::{self, ScopedJoinHandle};
 use tenferro_cpu::CpuEngine;
 
 /// A lane body runs provider code on its own thread, so it gets the same 16 MiB
-/// stack `strided-exec`'s pool default gives its workers.
+/// stack `threadteam`'s pool default gives its workers.
 const LANE_STACK_BYTES: usize = 16 << 20;
 
 /// The lane executor was built without an engine.

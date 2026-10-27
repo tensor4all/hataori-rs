@@ -48,7 +48,7 @@ and `scripts/check-tenferro.sh`), and the opt-in `tenferro` example feature is
 built and run by `scripts/check-tutorial-examples.sh`, which builds and runs
 the Mandelbrot examples with the `tenferro` feature. The tenferro-only
 `hataori-tenferro` adapter is pinned to tenferro
-`e7edd899def8b80df81f2249a7c3b79d64ea592d` and binds Hataori lanes to
+`804bd4db2a0f67822ab97bc5002e4e309c5969fc` and binds Hataori lanes to
 caller-held tenferro engines ([adapter design](design/tenferro-adapter.md));
 Phase 20b adds tensor4all contexts and reconstruction after tensor4all-rs#663.
 

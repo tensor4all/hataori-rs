@@ -6,7 +6,7 @@ design of hataori-rs#24, which tenferro-rs no longer supports.
 **Upstream contract:** tenferro-rs
 [#2206](https://github.com/tensor4all/tenferro-rs/issues/2206) (caller-held
 engines, no sessions, no tenferro-owned threads) and its implementation
-`e7edd899def8b80df81f2249a7c3b79d64ea592d`. The cross-repository model is
+`804bd4db2a0f67822ab97bc5002e4e309c5969fc`. The cross-repository model is
 tensor4all-meta
 [`docs/design/core-boundary-and-execution-ownership.md`](https://github.com/tensor4all/tensor4all-meta/blob/main/docs/design/core-boundary-and-execution-ownership.md)
 §"Example: nested parallelism in hataori".
@@ -101,7 +101,7 @@ let engines = (0..lanes)
 let mut lanes = TenferroLanes::new(engines)?;
 ```
 
-`tenferro_cpu::Pool::builder()` is tenferro's re-export of `strided_exec`'s pool
+`tenferro_cpu::Pool::builder()` is tenferro's re-export of `threadteam`'s pool
 builder (it presets the 16 MiB worker stack the providers need); the worker
 count, and any placement added through `on_start`, are the caller's decision.
 `CpuEngine::serial()` is a valid lane engine too and costs no pool at all.
@@ -121,7 +121,7 @@ hataori::map_in_lanes(map) / pmap_lanes
 ```
 
 `Lanes::run` spawns one scoped thread per engine and joins them in index order.
-A lane thread gets the same 16 MiB stack `strided-exec`'s pool default gives
+A lane thread gets the same 16 MiB stack `threadteam`'s pool default gives
 its workers (`LANE_STACK_BYTES` in the adapter), because a lane body runs
 provider code on that thread; tenferro no longer exports a stack constant.
 `run_with_coordinator` spawns the same lanes and then runs the coordinator on the
