@@ -88,6 +88,11 @@ fn each_lane_is_lent_its_own_engine_on_its_own_thread() {
                 !workers[index].lock().unwrap().contains(&thread),
                 "lane {index} runs inside its engine's pool"
             );
+            assert_eq!(
+                engine.has_team(),
+                engine.num_threads() > 1,
+                "a multi-thread lane engine leads a threadteam team"
+            );
             seen.lock()
                 .unwrap()
                 .push((index, engine.num_threads(), thread));

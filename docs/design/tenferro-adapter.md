@@ -6,7 +6,7 @@ design of hataori-rs#24, which tenferro-rs no longer supports.
 **Upstream contract:** tenferro-rs
 [#2206](https://github.com/tensor4all/tenferro-rs/issues/2206) (caller-held
 engines, no sessions, no tenferro-owned threads) and its implementation
-`804bd4db2a0f67822ab97bc5002e4e309c5969fc`. The cross-repository model is
+`8fec1ca70852b930c092e7177c30bb8af7594a57`. The cross-repository model is
 tensor4all-meta
 [`docs/design/core-boundary-and-execution-ownership.md`](https://github.com/tensor4all/tensor4all-meta/blob/main/docs/design/core-boundary-and-execution-ownership.md)
 §"Example: nested parallelism in hataori".

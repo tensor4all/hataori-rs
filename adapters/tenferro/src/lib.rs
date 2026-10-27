@@ -1,8 +1,9 @@
 //! Hataori [`Lanes`] over the caller's tenferro CPU [`CpuEngine`]s.
 //!
 //! Hataori owns which item runs where and tenferro owns nothing but the engine
-//! a lane runs on. The caller builds one engine per lane — each with its own
-//! Rayon pool, sized by the caller — and this adapter runs the lanes on threads
+//! a lane runs on. The caller builds one engine per lane — each engine's
+//! pool, sized by the caller, becomes a threadteam team that the lane thread
+//! leads — and this adapter runs the lanes on threads
 //! of its own. A lane thread is never a worker of any lane's engine pool, so
 //! tenferro's "never called from one of its engine's own workers" rule holds by
 //! construction rather than by a runtime check.
