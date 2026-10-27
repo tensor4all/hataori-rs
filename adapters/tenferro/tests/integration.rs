@@ -11,7 +11,7 @@ use tenferro_tensor::{Tensor, TensorElementwise, TensorRead};
 ///
 /// This is a real tenferro operation, not a placeholder: it runs on the engine
 /// lent to the lane, on a thread that is not one of that pool's workers, so the
-/// providers fan out instead of running serially (strided-exec's scheduler does
+/// providers fan out instead of running serially (threadteam's scheduler does
 /// not fan out from inside a pool).
 fn double_in_lane(item: f64, engine: &mut CpuEngine) -> Result<f64, String> {
     let x = Tensor::from_vec_col_major(vec![1], vec![item]).map_err(|error| error.to_string())?;
@@ -87,6 +87,11 @@ fn each_lane_is_lent_its_own_engine_on_its_own_thread() {
             assert!(
                 !workers[index].lock().unwrap().contains(&thread),
                 "lane {index} runs inside its engine's pool"
+            );
+            assert_eq!(
+                engine.has_team(),
+                engine.num_threads() > 1,
+                "a multi-thread lane engine leads a threadteam team"
             );
             seen.lock()
                 .unwrap()
