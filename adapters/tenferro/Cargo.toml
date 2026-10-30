@@ -15,12 +15,12 @@ mpi-upstream = { package = "mpi", version = "=0.8.1", default-features = false, 
 # Provider-neutral: the consumer selects tenferro-cpu's CPU provider (`native`,
 # `blas`, `provider-inject`, ...) through its own dependency on tenferro-cpu;
 # the providers are mutually exclusive, so the adapter must not pick one.
-tenferro-cpu = { git = "https://github.com/tensor4all/tenferro-rs", rev = "8fec1ca70852b930c092e7177c30bb8af7594a57", default-features = false }
+tenferro-cpu = { git = "https://github.com/tensor4all/tenferro-rs", rev = "a9f494cc4679387c75af698b299c316fd2295fe4", default-features = false }
 
 [dev-dependencies]
 # The adapter's own tests, doctests and examples run on the native provider.
-tenferro-cpu = { git = "https://github.com/tensor4all/tenferro-rs", rev = "8fec1ca70852b930c092e7177c30bb8af7594a57", default-features = false, features = ["native"] }
-tenferro-tensor = { git = "https://github.com/tensor4all/tenferro-rs", rev = "8fec1ca70852b930c092e7177c30bb8af7594a57" }
+tenferro-cpu = { git = "https://github.com/tensor4all/tenferro-rs", rev = "a9f494cc4679387c75af698b299c316fd2295fe4", default-features = false, features = ["native"] }
+tenferro-tensor = { git = "https://github.com/tensor4all/tenferro-rs", rev = "a9f494cc4679387c75af698b299c316fd2295fe4" }
 
 [[example]]
 name = "pmap_lanes_smoke"
