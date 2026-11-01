@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Daily canary: no Cargo.lock is committed, so main can turn red without a
+  # commit when the registry resolves a newer dependency train (issue 35).
+  schedule:
+    - cron: "0 3 * * *"
 
 permissions:
   contents: read
