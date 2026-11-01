@@ -14,7 +14,7 @@ use std::{
         Arc, Barrier,
     },
     task::{Context, Poll, Wake, Waker},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use support::{Counter, CounterAdd, Increment};
 
@@ -131,14 +131,18 @@ fn run_round(run: u128) {
                         run as u64 + 5
                     );
                     drop(remote);
-                    for _ in 0..10_000 {
+                    // The peer releases its handle asynchronously, so wait for the
+                    // condition instead of spinning through a fixed iteration count.
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    while runtime.stats().objects.live_objects != 0 && Instant::now() < deadline {
                         runtime.progress(64).unwrap();
-                        if runtime.stats().objects.live_objects == 0 {
-                            break;
-                        }
-                        std::thread::yield_now();
+                        std::thread::sleep(Duration::from_millis(50));
                     }
-                    assert_eq!(runtime.stats().objects.live_objects, 0);
+                    assert_eq!(
+                        runtime.stats().objects.live_objects,
+                        0,
+                        "live_objects did not reach 0 within 5 s of dropping the remote"
+                    );
                     barrier.wait();
                     for _ in 0..128 {
                         runtime.progress(64).unwrap();
