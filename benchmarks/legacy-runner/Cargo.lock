@@ -152,7 +152,7 @@ checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 [[package]]
 name = "hataori"
 version = "0.1.0"
-source = "git+https://github.com/shinaoka/hataori-rs.git?rev=34cb1b1371c8b2f8ef750e2d49d10f9ef8f0782e#34cb1b1371c8b2f8ef750e2d49d10f9ef8f0782e"
+source = "git+https://github.com/tensor4all/hataori-rs.git?rev=34cb1b1371c8b2f8ef750e2d49d10f9ef8f0782e#34cb1b1371c8b2f8ef750e2d49d10f9ef8f0782e"
 dependencies = [
  "bincode",
  "libc",

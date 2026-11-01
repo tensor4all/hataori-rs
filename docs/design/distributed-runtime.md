@@ -2,7 +2,7 @@
 
 **Status:** Accepted long-term direction; phases A-D and Phase E algorithm/facade correctness implemented; Phase E performance acceptance pending a valid-host PASS report
 
-**Tracking:** [hataori-rs#14](https://github.com/shinaoka/hataori-rs/issues/14)
+**Tracking:** [hataori-rs#14](https://github.com/tensor4all/hataori-rs/issues/14)
 
 **Compatibility:** The future runtime may replace the current P0/P1 public API
 without a compatibility layer

@@ -3,7 +3,7 @@
 **Status:** Proposed implementation contract; implementation must not start until
 its recorded design review gate passes
 
-**Tracking:** [hataori-rs#14](https://github.com/shinaoka/hataori-rs/issues/14)
+**Tracking:** [hataori-rs#14](https://github.com/tensor4all/hataori-rs/issues/14)
 
 **Depends on:** Phase B typed actions/futures, Phase C placement, Phase D
 migration, and the immutable Phase A performance manifest

@@ -1,6 +1,6 @@
 # Phase B long-lived runtime and structured execution
 
-**Tracking:** [hataori-rs#14](https://github.com/shinaoka/hataori-rs/issues/14)
+**Tracking:** [hataori-rs#14](https://github.com/tensor4all/hataori-rs/issues/14)
 
 **Status:** implementation contract for Phase B. Phase A remains the transport
 foundation; Phase C-E object, migration, and algorithm APIs remain unimplemented.
