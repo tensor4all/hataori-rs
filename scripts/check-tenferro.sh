@@ -5,7 +5,7 @@ root_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root_dir"
 export BINDGEN_EXTRA_CLANG_ARGS=${BINDGEN_EXTRA_CLANG_ARGS:-"-I$(gcc -print-file-name=include)"}
 
-pin=d97d604176bae4ff14caa9bb7cc7e3feb2dd138e
+pin=bdde3f2b6e82f0c9991f4170a642ad80dca7b707
 
 # Every stage runs in its own process group under a short watchdog. A cold
 # tenferro dependency build does not fit one window, so `bounded` re-runs the
@@ -77,7 +77,7 @@ by_name = {package["name"]: package for package in packages}
 if "hataori-tenferro" not in by_name:
     raise SystemExit("check-tenferro: missing package hataori-tenferro")
 
-pin = "d97d604176bae4ff14caa9bb7cc7e3feb2dd138e"
+pin = "bdde3f2b6e82f0c9991f4170a642ad80dca7b707"
 for name in ("tenferro-cpu", "tenferro-tensor"):
     source = by_name[name].get("source") or ""
     if f"rev={pin}" not in source or not source.endswith(f"#{pin}"):
