@@ -268,6 +268,14 @@ fn allowed_cpus_is_non_empty_and_sorted() {
 #[test]
 fn allowed_cpus_is_the_mask_managed_validates_against() {
     let cpus = allowed_cpus().unwrap();
+    // Compared in full against the mask read here, not sampled: a mask that was
+    // truncated to its first entries still contained the one cpu checked below
+    // and still missed the one cpu rejected below.
+    assert_eq!(
+        cpus,
+        process_mask(),
+        "allowed_cpus must be the whole process affinity mask, ascending"
+    );
     if let Some(outside) = (0..libc::CPU_SETSIZE as usize).find(|cpu| !cpus.contains(cpu)) {
         let error = Domain::managed(vec![outside], 1).unwrap_err();
         assert!(
@@ -275,6 +283,22 @@ fn allowed_cpus_is_the_mask_managed_validates_against() {
             "cpu {outside} is outside the mask {cpus:?}, but managed domain did not reject it: {error}"
         );
     }
-    let domain = Domain::managed(cpus[..1].to_vec(), 1).unwrap();
-    assert_eq!(domain.worker_count(), 1);
+    // Whole mask, and more than one worker wherever the mask allows it: a
+    // truncated mask rejects a request of three or more workers.
+    let workers = cpus.len().min(4);
+    let domain = Domain::managed(cpus, workers).unwrap();
+    assert_eq!(domain.worker_count(), workers);
+}
+
+/// The process affinity mask, read directly: the reference the comparison above
+/// needs, independent of `allowed_cpus`.
+#[cfg(all(feature = "rayon", target_os = "linux"))]
+fn process_mask() -> Vec<usize> {
+    let mut set = unsafe { std::mem::zeroed::<libc::cpu_set_t>() };
+    let rc =
+        unsafe { libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set) };
+    assert_eq!(rc, 0, "sched_getaffinity failed in the test itself");
+    (0..libc::CPU_SETSIZE as usize)
+        .filter(|cpu| unsafe { libc::CPU_ISSET(*cpu, &set) })
+        .collect()
 }

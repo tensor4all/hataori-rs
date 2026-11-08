@@ -29,7 +29,17 @@ mpi_launcher_supports_oversubscribe() {
     if grep -Eqi 'open[ -]?mpi|openrte|prrte|prte' <<<"$banner"; then
         return 0
     fi
-    bounded 30s "$launcher" --oversubscribe -n 1 true >/dev/null 2>&1
+    # Probed root-capable first: Open MPI refuses to run as root without
+    # `OMPI_ALLOW_RUN_AS_ROOT(_CONFIRM)`, and that refusal says nothing about
+    # `--oversubscribe`. Read as "unsupported", it also kept the callers that add
+    # `--allow-run-as-root` only after this check from ever passing it. Both
+    # forms are tried because the flag is Open MPI's and the variables are
+    # ignored by a launcher that does not use them.
+    if bounded 30s env OMPI_ALLOW_RUN_AS_ROOT=1 OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1 \
+        "$launcher" --oversubscribe -n 1 true >/dev/null 2>&1; then
+        return 0
+    fi
+    bounded 30s "$launcher" --allow-run-as-root --oversubscribe -n 1 true >/dev/null 2>&1
 }
 
 # The CPUs this process may run on. `nproc` and `getconf _NPROCESSORS_ONLN`

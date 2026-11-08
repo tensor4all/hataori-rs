@@ -5,7 +5,8 @@
 #   P1  the fallback watchdog must enforce its deadline even when the command
 #       ignores SIGTERM, and must take the command's descendants with it;
 #   P2  the launcher probe must not report a supported launcher as unsupported
-#       on a platform without `setsid`;
+#       on a platform without `setsid`, and must not read a launcher's refusal to
+#       run as root as a missing `--oversubscribe`;
 #   P3  the replay of the spooled output must not hold `bounded` past its bound
 #       when the caller stops reading — not on stdout, not on stderr, not through
 #       the truncation notice, and not through the replay's own `sleep`.
@@ -537,6 +538,29 @@ exit 0
 WRAPPER
 chmod +x "$wrapper"
 
+# Open MPI as root: a run is refused unless the caller says it may run as root
+# (`OMPI_ALLOW_RUN_AS_ROOT_CONFIRM`, or Open MPI's `--allow-run-as-root`). That
+# refusal says nothing about `--oversubscribe`, and reading it as "unsupported"
+# also kept the callers that add `--allow-run-as-root` only after this check
+# from ever passing it.
+root_launcher=$tmp_dir/root-launcher
+cat >"$root_launcher" <<ROOTLAUNCHER
+#!/bin/sh
+if [ "\$1" = --version ]; then
+    echo "site MPI wrapper 2.0"
+    exit 0
+fi
+case " \$* " in
+  *" --allow-run-as-root "*) exit 0 ;;
+esac
+if [ "\${OMPI_ALLOW_RUN_AS_ROOT_CONFIRM:-}" != 1 ]; then
+    echo "mpiexec: it is not permitted to run as root" >&2
+    exit 1
+fi
+exit 0
+ROOTLAUNCHER
+chmod +x "$root_launcher"
+
 source "$root_dir/scripts/mpi-launcher.sh"
 
 # P1, seventh reproduction: the same leak behind a launcher banner. A wrapper
@@ -577,5 +601,9 @@ printf '== hanging launcher banner: %ss\n' "$elapsed"
 if ! mpi_launcher_supports_oversubscribe "$wrapper"; then
     fail 'an unrecognized banner was reported as unsupported without probing the launcher'
 fi
+if ! mpi_launcher_supports_oversubscribe "$root_launcher"; then
+    fail 'a launcher that refuses root execution was read as "no --oversubscribe"; the probe is not root-capable'
+fi
+printf '== launcher that refuses root execution: probed root-capable\n'
 
 printf 'bounded-run checks passed (deadline escalation, descendant cleanup, portable probe)\n'
