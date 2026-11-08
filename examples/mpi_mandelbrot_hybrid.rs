@@ -130,16 +130,21 @@ fn render<C: Communicator>(
 }
 // snippet-end:hybrid-call
 
+// snippet-start:hybrid-domain
 /// Rejects a worker request this process cannot honour.
 ///
 /// Asking for more workers than the affinity mask allows is a readable
 /// error, not a panic: a panicking rank leaves the others in a collective
 /// until the launcher is killed.
 fn check_worker_request(workers: usize) -> Result<(), String> {
+    let allowed = hataori::allowed_cpus().map_err(|error| format!("affinity query: {error}"))?;
+    check_against(workers, &allowed)
+}
+
+fn check_against(workers: usize, allowed: &[usize]) -> Result<(), String> {
     if workers == 0 {
         return Err("--workers must be greater than zero".to_owned());
     }
-    let allowed = hataori::allowed_cpus().map_err(|error| format!("affinity query: {error}"))?;
     if allowed.len() < workers {
         return Err(format!(
             "{workers} workers requested, but this process may only use {} CPU(s) {allowed:?}; lower --workers or launch with --bind-to none",
@@ -151,11 +156,14 @@ fn check_worker_request(workers: usize) -> Result<(), String> {
 
 /// Builds this rank's managed pool from the CPUs the process may use.
 fn managed_domain(workers: usize) -> Result<Domain, String> {
-    check_worker_request(workers)?;
+    // One snapshot: validating and slicing different queries would leave a
+    // window where the mask shrinks between them and the slice panics.
     let allowed = hataori::allowed_cpus().map_err(|error| format!("affinity query: {error}"))?;
+    check_against(workers, &allowed)?;
     Domain::managed(allowed[..workers].to_vec(), workers)
         .map_err(|error| format!("rayon domain: {error}"))
 }
+// snippet-end:hybrid-domain
 
 /// `pub` so that the `rsmpi_rt_*` wrapper example can reuse this file.
 pub fn main() {

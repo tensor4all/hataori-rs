@@ -103,6 +103,53 @@ fn render<C: Communicator>(
 - The call must originate outside any Rayon worker; calling `pmap` from
   inside a pool is rejected in preflight.
 
+## The pool's CPU set
+
+The worker count can differ per rank, but the CPU ids cannot be chosen by
+arithmetic. A launcher (`mpiexec --bind-to core`) or a runner that reserves a
+CPU narrows the affinity mask, so `0..workers` can name an id the process may
+not use and `Domain::managed` rejects it. Build the set from
+`hataori::allowed_cpus()` instead, and abort the whole job when the mask is
+smaller than `--workers`: rank 0 alone cannot report it, because the other
+ranks stay in the collective.
+
+<!-- snippet-source: examples/mpi_mandelbrot_hybrid.rs#hybrid-domain -->
+```rust
+/// Rejects a worker request this process cannot honour.
+///
+/// Asking for more workers than the affinity mask allows is a readable
+/// error, not a panic: a panicking rank leaves the others in a collective
+/// until the launcher is killed.
+fn check_worker_request(workers: usize) -> Result<(), String> {
+    let allowed = hataori::allowed_cpus().map_err(|error| format!("affinity query: {error}"))?;
+    check_against(workers, &allowed)
+}
+
+fn check_against(workers: usize, allowed: &[usize]) -> Result<(), String> {
+    if workers == 0 {
+        return Err("--workers must be greater than zero".to_owned());
+    }
+    if allowed.len() < workers {
+        return Err(format!(
+            "{workers} workers requested, but this process may only use {} CPU(s) {allowed:?}; lower --workers or launch with --bind-to none",
+            allowed.len()
+        ));
+    }
+    Ok(())
+}
+
+/// Builds this rank's managed pool from the CPUs the process may use.
+fn managed_domain(workers: usize) -> Result<Domain, String> {
+    // One snapshot: validating and slicing different queries would leave a
+    // window where the mask shrinks between them and the slice panics.
+    let allowed = hataori::allowed_cpus().map_err(|error| format!("affinity query: {error}"))?;
+    check_against(workers, &allowed)?;
+    Domain::managed(allowed[..workers].to_vec(), workers)
+        .map_err(|error| format!("rayon domain: {error}"))
+}
+```
+<!-- end-snippet-source -->
+
 ## Batch size with a pool on every rank
 
 <!-- snippet-source: examples/mpi_mandelbrot_hybrid.rs#hybrid-batch-size -->

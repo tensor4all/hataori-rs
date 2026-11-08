@@ -59,6 +59,24 @@ run_mpi() {
     [[ -f $work_dir/$example.png ]]
 }
 
+run_mpi_fails_fast() {
+    local example=$1
+    shift
+    echo "== expect a bounded failure: $example (mpiexec -n $ranks) $*"
+    local started=$SECONDS
+    if (cd "$work_dir" && timeout 60 "${launcher[@]}" -n "$ranks" \
+        "$root_dir/target/release/examples/$example" "${size_args[@]}" "$@"); then
+        echo "check-tutorial-examples: $example $* was expected to fail" >&2
+        return 1
+    fi
+    if ((SECONDS - started > 45)); then
+        echo "check-tutorial-examples: $example $* took $((SECONDS - started))s; the abort path is not bounded" >&2
+        return 1
+    fi
+    [[ ! -f $work_dir/$example.png ]] \
+        || { echo "check-tutorial-examples: $example wrote a PNG after a failure" >&2; return 1; }
+}
+
 build_lane tenferro serial_mandelbrot
 run_direct serial_mandelbrot --output serial_mandelbrot.png
 
@@ -72,6 +90,10 @@ run_mpi mpi_mandelbrot_placement --output mpi_mandelbrot_placement.png
 
 build_lane mpi,rayon,tenferro mpi_mandelbrot_hybrid
 run_mpi mpi_mandelbrot_hybrid --workers 2 --output mpi_mandelbrot_hybrid.png
+# #41: an inadmissible worker request must abort the job instead of leaving the other
+# rank in the collective until the job timeout. The value also overflows a naive
+# `size * workers * factor` product.
+run_mpi_fails_fast mpi_mandelbrot_hybrid --workers 288230376151711744
 
 if [[ -n $mpi_rt_lib ]]; then
     [[ $mpi_rt_lib = /* && -f $mpi_rt_lib ]] || {
