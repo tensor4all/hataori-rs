@@ -5,9 +5,11 @@
 #   P1  the fallback watchdog must enforce its deadline even when the command
 #       ignores SIGTERM, and must take the command's descendants with it;
 #   P2  the launcher probe must not report a supported launcher as unsupported
-#       on a platform without `setsid`.
+#       on a platform without `setsid`;
+#   P3  the replay of the spooled output must not hold `bounded` past its bound
+#       when the caller stops reading.
 #
-# Both run against the *fallback* paths. The tools that normally make the
+# All of them run against the *fallback* paths. The tools that normally make the
 # fallback unnecessary (`setsid`, GNU `timeout`) are hidden with a PATH shim, so
 # this also runs on Linux CI instead of only on macOS.
 set -Eeuo pipefail
@@ -25,7 +27,7 @@ fail() {
 # the macOS situation.
 shim=$tmp_dir/bin
 mkdir -p "$shim"
-for tool in sh python3 sleep kill ps awk mktemp rm cat ls grep dirname chmod tr pgrep mkdir env; do
+for tool in sh python3 sleep kill ps awk mktemp rm cat ls grep dirname chmod tr pgrep mkdir env head wc; do
     path=$(command -v "$tool") || fail "missing tool for the shim: $tool"
     ln -s "$path" "$shim/$tool"
 done
@@ -150,7 +152,34 @@ if kill -0 "$holder" 2>/dev/null; then
     fail "the background child $holder outlived the bound"
 fi
 
-
+# P3 (issue 43): the caller stops reading. The child writes ~4 MiB, the reader
+# takes 1 KiB and then holds the pipe open without reading, so the replay has
+# nowhere to go. A synchronous `cat` returned only when the reader resumed
+# (measured at ee71e40: 6.2 s for a reader away 6 s, 33 s for this fixture's
+# holder); the replay carries its own bound now, so the run ends inside
+# bound + grace and the rest is dropped with a notice.
+ret_file=$tmp_dir/stopped-reader
+started=$SECONDS
+{
+    status=0
+    bounded 1 head -c 4194304 /dev/zero || status=$?
+    printf '%s %s\n' "$((SECONDS - started))" "$status" >"$ret_file"
+} | {
+    head -c 1024 >/dev/null
+    # Hold the read end without draining it; give up long after the bound so a
+    # broken run fails on the elapsed check instead of hanging this test.
+    for ((i = 0; i < 300; i++)); do
+        [[ -s $ret_file ]] && break
+        sleep 0.1
+    done
+}
+[[ -s $ret_file ]] || fail 'the stopped-reader fixture never saw `bounded` return'
+read -r elapsed status <"$ret_file"
+printf '== caller that stops reading: %ss, status %s (1s bound, 4 MiB child)\n' \
+    "$elapsed" "$status"
+((status == 0)) || fail "a command that succeeded reported $status"
+((elapsed <= 1 + bounded_grace)) ||
+    fail "the replay outlived the bound: ${elapsed}s for a 1s bound"
 
 # P1, eighth reproduction: the escaped descendant starts a *new process group*
 # and its parent exits at once, so neither a group kill nor a tree walk from the
