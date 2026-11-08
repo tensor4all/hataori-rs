@@ -43,7 +43,9 @@ mpi_available_cpus() {
 
 mpi_rank_counts() {
     local cap=$1 available max
-    available=$(mpi_available_cpus)
+    # Callers assign this in a checked command; a failed CPU query must fail
+    # the gate rather than sweep a silently reduced set of ranks.
+    available=$(mpi_available_cpus) || return 1
     max=$cap
     if ((available < max)); then
         max=$available

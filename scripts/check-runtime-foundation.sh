@@ -46,7 +46,8 @@ if mpi_launcher_supports_oversubscribe "$launcher"; then
         launcher_flags+=(--allow-run-as-root)
     fi
 fi
-for count in $(mpi_rank_counts 4); do
+rank_counts=$(mpi_rank_counts 4)
+for count in $rank_counts; do
     output=$(mktemp)
     set +e
     env -u DISPLAY setsid timeout --signal=TERM --kill-after=2s 45s \

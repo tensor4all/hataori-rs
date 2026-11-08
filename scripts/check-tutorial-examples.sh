@@ -18,6 +18,15 @@ export BINDGEN_EXTRA_CLANG_ARGS=${BINDGEN_EXTRA_CLANG_ARGS:-"-I$(gcc -print-file
 
 source "$root_dir/scripts/mpi-launcher.sh"
 
+# The arms are bounded with `setsid timeout`, as the sibling acceptance scripts
+# already are, so a stuck launcher cannot hold the job to its timeout.
+for tool in setsid timeout; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        printf 'check-tutorial-examples: %s is required (util-linux / GNU coreutils)\n' "$tool" >&2
+        exit 2
+    }
+done
+
 # Small enough to finish in seconds, large enough to reach `max_iter`.
 size_args=(--width 256 --height 256 --max-iter 200)
 
@@ -59,8 +68,11 @@ build_lane() {
 run_direct() {
     local example=$1
     shift
+    # The arms share `work_dir`, so a stale image from an earlier run would
+    # satisfy the assertion below for a run that never wrote one.
+    rm -f "$work_dir/$example.png"
     echo "== run: $example $*"
-    (cd "$work_dir" && "${cpu_prefix[@]}" \
+    (cd "$work_dir" && ${cpu_prefix[@]+"${cpu_prefix[@]}"} \
         setsid timeout --signal=TERM --kill-after=5s "$arm_timeout" \
         "$root_dir/target/release/examples/$example" "${size_args[@]}" "$@")
     [[ -f $work_dir/$example.png ]]
@@ -69,8 +81,9 @@ run_direct() {
 run_mpi() {
     local example=$1
     shift
+    rm -f "$work_dir/$example.png"
     echo "== run: $example (mpiexec -n $ranks) $*"
-    (cd "$work_dir" && "${cpu_prefix[@]}" \
+    (cd "$work_dir" && ${cpu_prefix[@]+"${cpu_prefix[@]}"} \
         setsid timeout --signal=TERM --kill-after=5s "$arm_timeout" \
         "${launcher[@]}" -n "$ranks" \
         "$root_dir/target/release/examples/$example" "${size_args[@]}" "$@")
@@ -86,7 +99,7 @@ run_mpi_fails_fast() {
     rm -f "$work_dir/$example.png"
     echo "== expect a bounded failure: $example (mpiexec -n $ranks) $*"
     local started=$SECONDS
-    if (cd "$work_dir" && "${cpu_prefix[@]}" \
+    if (cd "$work_dir" && ${cpu_prefix[@]+"${cpu_prefix[@]}"} \
         setsid timeout --signal=TERM --kill-after=5s "$abort_timeout" \
         "${launcher[@]}" -n "$ranks" \
         "$root_dir/target/release/examples/$example" "${size_args[@]}" \

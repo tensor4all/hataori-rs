@@ -18,7 +18,8 @@ source "$root_dir/scripts/mpi-launcher.sh"
 if mpi_launcher_supports_oversubscribe mpiexec; then
     mpi_flags+=(--oversubscribe)
 fi
-for n in $(mpi_rank_counts 4); do run 20 env -u DISPLAY mpiexec "${mpi_flags[@]}" -n "$n" target/debug/mpi_runtime_smoke; done
+rank_counts=$(mpi_rank_counts 4)
+for n in $rank_counts; do run 20 env -u DISPLAY mpiexec "${mpi_flags[@]}" -n "$n" target/debug/mpi_runtime_smoke; done
 if grep -REn 'todo!|unimplemented!|TODO|FIXME|unsafe impl[[:space:]]+(Send|Sync)' crates/hataori-algorithms/src crates/hataori-runtime/src; then exit 1; fi
 scripts/check-performance-manifest.py
 git diff --check

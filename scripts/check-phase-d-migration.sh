@@ -41,7 +41,8 @@ source "$root_dir/scripts/mpi-launcher.sh"
 if mpi_launcher_supports_oversubscribe mpiexec; then
     mpi_flags+=(--oversubscribe)
 fi
-for n in $(mpi_rank_counts 4); do
+rank_counts=$(mpi_rank_counts 4)
+for n in $rank_counts; do
     run_group 20 mpiexec "${mpi_flags[@]}" -n "$n" target/debug/mpi_runtime_smoke
 done
 
