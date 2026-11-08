@@ -128,6 +128,28 @@ if kill -0 "$escaped" 2>/dev/null; then
 fi
 printf '== process created during TERM handling: status %s\n' "$status"
 
+# P1, sixth reproduction: the command exits but a background child keeps the
+# function's stdout open, so the caller's command substitution blocks for that
+# child's whole lifetime even though nothing is left to bound. The group is
+# killed when the command returns, so the substitution returns with the bound.
+leak=$tmp_dir/stdout-holder
+started=$SECONDS
+output=$(bounded 1 sh -c "sleep 30 & echo \$! >$leak; echo banner")
+status=$?
+elapsed=$((SECONDS - started))
+printf '== background child holding stdout: %ss, status %s, output %s\n' \
+    "$elapsed" "$status" "$output"
+[[ $output == banner ]] || fail "the command output was lost: '$output'"
+((status == 0)) || fail "a command that succeeded reported $status"
+((elapsed <= 1 + bounded_grace)) ||
+    fail "the caller waited for a background child: ${elapsed}s for a 1s bound"
+[[ -s $leak ]] || fail 'the stdout-holder fixture did not record its child'
+holder=$(cat "$leak")
+if kill -0 "$holder" 2>/dev/null; then
+    kill -KILL "$holder" 2>/dev/null || true
+    fail "the background child $holder outlived the bound"
+fi
+
 
 
 # P2: an unrecognized banner must be probed, not written off, on a platform
@@ -145,6 +167,27 @@ WRAPPER
 chmod +x "$wrapper"
 
 source "$root_dir/scripts/mpi-launcher.sh"
+
+# P1, seventh reproduction: the same leak behind a launcher banner. A wrapper
+# that exits after starting a background process makes the whole detection slow
+# unless the group is cleaned up when the query returns.
+noisy=$tmp_dir/noisy-launcher
+cat >"$noisy" <<NOISY
+#!/bin/sh
+if [ "\$1" = --version ]; then
+    sleep 15 &
+    echo "site MPI wrapper 1.0"
+    exit 0
+fi
+exit 0
+NOISY
+chmod +x "$noisy"
+started=$SECONDS
+mpi_launcher_supports_oversubscribe "$noisy" || true
+elapsed=$((SECONDS - started))
+printf '== launcher that leaves a background child: %ss\n' "$elapsed"
+((elapsed <= 10 + bounded_grace)) ||
+    fail "detection waited for the launcher's background child: ${elapsed}s"
 
 # P2, second reproduction: a launcher whose --version never returns must not
 # block detection; the banner query carries its own deadline.

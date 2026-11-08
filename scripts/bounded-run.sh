@@ -4,9 +4,13 @@
 #
 #   source "$root_dir/scripts/bounded-run.sh"
 #
-# `setsid timeout` is the Linux form. macOS has neither, and an arm without a
-# bound holds the whole job to its job-level timeout (issue 41: a rank blocked in
-# the collective), so the portable path has to bound and clean up as well:
+# An arm without a bound holds the whole job to its job-level timeout (issue 41: a
+# rank blocked in the collective). This is that bound, and it is one implementation
+# on every platform: `setsid timeout --kill-after` cannot provide it, because it
+# returns as soon as the direct child exits, so the KILL it schedules never
+# reaches a descendant that ignores SIGTERM (measured: `setsid timeout
+# --signal=TERM --kill-after=2s 1s sh -c 'sh -c "trap \"\" TERM; exec sleep 30" &
+# wait'` returns 124 after 1 s and leaves the `sleep` under PPID 1).
 #
 # - the command runs as the leader of its own process group (job control), so the
 #   deadline signals the *group*: a process started inside a TERM handler is in no
@@ -20,7 +24,12 @@
 #   `timeout --kill-after` — so the arm cannot outlive the deadline it was
 #   supposed to enforce;
 # - the deadline is recorded, so a command that traps TERM and exits 0 is
-#   reported as a timeout (124, as `timeout` reports it) instead of a success.
+#   reported as a timeout (124, as `timeout` reports it) instead of a success;
+# - whatever is left in the group when the command returns is killed too: a
+#   background child that outlives the command still holds this function's stdout,
+#   and the caller's command substitution then waits for it long after the bound
+#   (`output=$(bounded 1 sh -c "sleep 4 & echo banner")` took 4 s and reported
+#   success).
 
 if [[ -n ${HATAORI_BOUNDED_RUN_SH:-} ]]; then
     return 0
@@ -60,15 +69,6 @@ bounded_signal_group() {
 bounded() {
     local secs=$1
     shift
-    if command -v setsid >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
-        setsid timeout --signal=TERM --kill-after="${bounded_grace}s" "$secs" "$@"
-        return
-    fi
-    if command -v timeout >/dev/null 2>&1; then
-        timeout --signal=TERM --kill-after="${bounded_grace}s" "$secs" "$@"
-        return
-    fi
-
     local child status=0 watchdog marker timed_out=0 monitor=0
     local targets=
     marker=$(mktemp "${TMPDIR:-/tmp}/hataori-bounded.XXXXXX")
@@ -107,8 +107,12 @@ bounded() {
         # shellcheck disable=SC2086
         bounded_signal_pids KILL $targets
     else
-        # The command finished first; take its `sleep` with it rather than
-        # leaving the watchdog to expire.
+        # The command finished. Anything still in its group outlived it and can
+        # still hold this function's stdout, which would keep the caller's
+        # command substitution open past the bound, so it is killed rather than
+        # inherited.
+        bounded_signal_group KILL "$child"
+        # Take the watchdog's `sleep` with it rather than leaving it to expire.
         targets=$(bounded_tree_pids "$watchdog")
         # shellcheck disable=SC2086
         bounded_signal_pids KILL $targets
