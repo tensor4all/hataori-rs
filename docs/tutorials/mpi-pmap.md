@@ -70,7 +70,9 @@ fn render<C: Communicator>(world: &C, param: &Param, batch_size: NonZeroUsize) -
 /// overhead. The default of 32 measured fastest on a 4096-column image
 /// across 2-8 ranks.
 fn batch_size(param: &Param, size: i32, factor: usize) -> NonZeroUsize {
-    let per_rank = (size as usize).max(1) * factor.max(1);
+    // Saturating: `--batch-factor` is user input, and a wrapped product would
+    // turn `width / per_rank` into a division by zero.
+    let per_rank = (size as usize).max(1).saturating_mul(factor.max(1));
     NonZeroUsize::new(
         (param.width / per_rank)
             .max(MIN_BATCH_COLUMNS)

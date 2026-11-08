@@ -22,17 +22,20 @@ cp target/debug/examples/mpi_placement_smoke "$tmp_dir/upstream"
 cargo build --example rsmpi_rt_placement_smoke --no-default-features --features rsmpi-rt
 cp target/debug/examples/rsmpi_rt_placement_smoke "$tmp_dir/runtime"
 
+source "$root_dir/scripts/mpi-launcher.sh"
 launcher=${MPIEXEC:-mpiexec}
 launcher_flags=()
-if "$launcher" --version 2>&1 | grep -Eq 'Open MPI|OpenRTE'; then
+if mpi_launcher_supports_oversubscribe "$launcher"; then
     launcher_flags+=(--oversubscribe)
     if ((EUID == 0)); then
         launcher_flags+=(--allow-run-as-root)
     fi
 fi
 
+rank_counts=$(mpi_rank_counts 4)
+
 for backend in upstream runtime; do
-    for count in 1 2 4; do
+    for count in $rank_counts; do
         environment=(env)
         if [[ $backend == runtime ]]; then
             environment+=(MPI_RT_LIB=$mpi_rt_lib)
@@ -48,4 +51,4 @@ for backend in upstream runtime; do
     done
 done
 
-printf 'placement checks passed for mpi and rsmpi-rt (n=1,2,4)\n'
+printf 'placement checks passed for mpi and rsmpi-rt (n=%s)\n' "${rank_counts// /,}"

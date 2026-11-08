@@ -72,13 +72,14 @@ for mode in sequential outer inner; do
     run_local "$tmp_dir/rayon" map-in 4 --threads 1 --mode "$mode"
 done
 
+source "$root_dir/scripts/mpi-launcher.sh"
 launcher=${MPIEXEC:-mpiexec}
 command -v "$launcher" >/dev/null || {
     printf 'legacy runner local smoke passed; MPI launcher unavailable\n'
     exit 0
 }
 launcher_flags=()
-if "$launcher" --version 2>&1 | grep -Eq 'Open MPI|OpenRTE'; then
+if mpi_launcher_supports_oversubscribe "$launcher"; then
     launcher_flags+=(--oversubscribe)
     if ((EUID == 0)); then
         launcher_flags+=(--allow-run-as-root)
