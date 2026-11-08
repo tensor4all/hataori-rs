@@ -18,3 +18,9 @@ mpi = { version = "=0.8.1", default-features = false, optional = true }
 libc = { version = "0.2", optional = true }
 rayon = { version = "1.10", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
+
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0
