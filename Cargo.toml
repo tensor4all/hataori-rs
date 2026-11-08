@@ -93,3 +93,9 @@ required-features = ["rsmpi-rt", "tenferro"]
 [[example]]
 name = "rsmpi_rt_mandelbrot_hybrid"
 required-features = ["rsmpi-rt", "rayon", "tenferro"]
+
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0

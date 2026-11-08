@@ -23,17 +23,21 @@ if [[ -n $fixture_commit ]]; then
     printf 'MPIwrapper fixture commit: %s\n' "$fixture_commit"
 fi
 
+root_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+source "$root_dir/scripts/mpi-launcher.sh"
+
 launcher=${MPIEXEC:-mpiexec}
 command -v "$launcher" >/dev/null 2>&1 || die "MPI launcher not found: $launcher"
 launcher_flags=()
-if "$launcher" --version 2>&1 | grep -Eq 'Open MPI|OpenRTE'; then
-    launcher_flags+=(--oversubscribe)
+if mpi_launcher_supports_oversubscribe "$launcher"; then
+    # `--oversubscribe` lets a job ask for more ranks than the affinity mask
+    # has CPUs; `--bind-to none` keeps these count sweeps off the launcher's
+    # one-core-per-rank default, which the smoke does not test.
+    launcher_flags+=(--oversubscribe --bind-to none)
     if ((EUID == 0)); then
         launcher_flags+=(--allow-run-as-root)
     fi
 fi
-
-root_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 original_home=$HOME
 export RUSTUP_HOME=${RUSTUP_HOME:-$original_home/.rustup}
 export CARGO_HOME=${CARGO_HOME:-$original_home/.cargo}
@@ -103,7 +107,8 @@ if ! grep -q 'Failed to load MPIwrapper library' "$negative_output"; then
 fi
 
 export MPI_RT_LIB=$mpi_rt_lib
-for count in 1 2 4; do
+rank_counts=$(mpi_rank_counts 4)
+for count in $rank_counts; do
     output=$tmp_dir/positive-$count.log
     if ! run_mpi "$count" "$binary" >"$output" 2>&1; then
         cat "$output" >&2
@@ -111,4 +116,4 @@ for count in 1 2 4; do
     fi
 done
 
-printf 'rsmpi-rt checks passed (n=1,2,4)\n'
+printf 'rsmpi-rt checks passed (n=%s)\n' "${rank_counts// /,}"

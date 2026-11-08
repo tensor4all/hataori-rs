@@ -361,8 +361,40 @@ fn run_map(config: &Config) -> Result<(), String> {
 
 #[cfg(feature = "rayon")]
 fn managed_domain(threads: usize) -> Result<hataori::Domain, String> {
-    let cpu_set: Vec<_> = (0..threads).collect();
-    hataori::Domain::managed(cpu_set, threads).map_err(|error| error.to_string())
+    // The pinned baseline rejects a CPU id outside this process's affinity
+    // mask, and a runner may reserve cpu 0, so the ids come from the mask
+    // instead of `0..threads`. On a host that may use `0..threads` this is the
+    // same set; on a narrowed mask it is the only set the baseline accepts.
+    hataori::Domain::managed(allowed_cpus(threads)?, threads).map_err(|error| error.to_string())
+}
+
+#[cfg(all(feature = "rayon", target_os = "linux"))]
+fn allowed_cpus(threads: usize) -> Result<Vec<usize>, String> {
+    let mut allowed = unsafe { std::mem::zeroed::<libc::cpu_set_t>() };
+    let result =
+        unsafe { libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut allowed) };
+    if result != 0 {
+        return Err(format!(
+            "affinity query failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let cpus: Vec<usize> = (0..libc::CPU_SETSIZE as usize)
+        .filter(|cpu| unsafe { libc::CPU_ISSET(*cpu, &allowed) })
+        .take(threads)
+        .collect();
+    if cpus.len() < threads {
+        return Err(format!(
+            "{threads} threads requested, but only {} CPUs are available to this process",
+            cpus.len()
+        ));
+    }
+    Ok(cpus)
+}
+
+#[cfg(all(feature = "rayon", not(target_os = "linux")))]
+fn allowed_cpus(threads: usize) -> Result<Vec<usize>, String> {
+    Ok((0..threads).collect())
 }
 
 #[cfg(all(feature = "mpi", feature = "rayon"))]

@@ -24,14 +24,17 @@ cp target/debug/examples/mpi_pmap_smoke "$tmp_dir/upstream-mpi-only"
 cargo build --example rsmpi_rt_pmap_smoke --no-default-features --features rsmpi-rt,rayon
 cp target/debug/examples/rsmpi_rt_pmap_smoke "$tmp_dir/runtime"
 
+source "$root_dir/scripts/mpi-launcher.sh"
 launcher=${MPIEXEC:-mpiexec}
 launcher_flags=()
-if "$launcher" --version 2>&1 | grep -Eq 'Open MPI|OpenRTE'; then
+if mpi_launcher_supports_oversubscribe "$launcher"; then
     launcher_flags+=(--oversubscribe)
     if ((EUID == 0)); then
         launcher_flags+=(--allow-run-as-root)
     fi
 fi
+
+rank_counts=$(mpi_rank_counts 4)
 
 run_case() {
     local backend=$1
@@ -94,7 +97,7 @@ expect_abort() {
     return 1
 }
 
-for count in 1 2 4; do
+for count in $rank_counts; do
     output=$tmp_dir/upstream-mpi-only-$count.log
     if ! setsid timeout --signal=TERM --kill-after=5s 120s \
         "$launcher" "${launcher_flags[@]}" -n "$count" "$tmp_dir/upstream-mpi-only" \
@@ -106,7 +109,7 @@ for count in 1 2 4; do
 done
 
 for backend in upstream runtime; do
-    for count in 1 2 4; do
+    for count in $rank_counts; do
         run_case "$backend" "$count"
     done
 
@@ -143,4 +146,4 @@ for backend in upstream runtime; do
     fi
 done
 
-printf 'MPI-only preflight, hybrid lanes, single-lane fallback, and single-lane prefetch panic checks passed for mpi and rsmpi-rt (n=1,2,4)\n'
+printf 'MPI-only preflight, hybrid lanes, single-lane fallback, and single-lane prefetch panic checks passed for mpi and rsmpi-rt (n=%s)\n' "${rank_counts// /,}"

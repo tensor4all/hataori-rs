@@ -14,7 +14,7 @@ enables them. The `rsmpi-rt` backend exposes the same items as `mpi`.
 | Model | Items |
 | --- | --- |
 | Serial | `map`, `MapError` |
-| Rayon | `map_in`, `MapInError`, `Domain::managed`, `Domain::external`, `PoolOwnership`, `PlacementStatus`, `DomainBuildError` |
+| Rayon | `map_in`, `MapInError`, `allowed_cpus`, `Domain::managed`, `Domain::external`, `PoolOwnership`, `PlacementStatus`, `DomainBuildError` |
 | MPI and hybrid | `pmap`, `PmapOptions`, `PmapError`, `PmapErrorKind`, `Domain::sequential` |
 | Placement | `broadcast`, `scatter`, `gather`, `PlacementError`, `PlacementErrorKind` |
 | Common | `Domain`, `DomainId`, `LocalMode`, `Place`, `DomainAdmission`, `DomainBusy`, `NegativeRank`, `UnsupportedDomainId` |
