@@ -23,7 +23,9 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/bounded-run.sh"
 
 mpi_launcher_supports_oversubscribe() {
     local launcher=$1 banner
-    banner=$("$launcher" --version 2>&1 || true)
+    # Bounded as well: a site wrapper whose --version never returns would block
+    # every script that sources this helper, before the bounded probe below runs.
+    banner=$(bounded 10s "$launcher" --version 2>&1 || true)
     if grep -Eqi 'open[ -]?mpi|openrte|prrte|prte' <<<"$banner"; then
         return 0
     fi

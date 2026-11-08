@@ -103,6 +103,33 @@ bounded 1 python3 -c 'import signal, sys, time; signal.signal(signal.SIGTERM, la
 ((status != 0)) || fail 'a command that exits zero on SIGTERM reported success'
 printf '== zero exit after SIGTERM: status %s\n' "$status"
 
+
+# P1, fifth reproduction: a process started *inside* the TERM handler must not
+# outlive the arm either. It is in no snapshot taken before the signal; the
+# process group is what catches it.
+pid_file=$tmp_dir/escaped
+status=0
+bounded 1 python3 -c '
+import signal, subprocess, sys, time
+def stop(*_):
+    child = subprocess.Popen(["sleep", "30"])
+    with open(sys.argv[1], "w") as f:
+        f.write(str(child.pid))
+    sys.exit(0)
+signal.signal(signal.SIGTERM, stop)
+time.sleep(30)
+' "$pid_file" || status=$?
+[[ -s $pid_file ]] || fail 'the fixture did not record its escaped process'
+escaped=$(cat "$pid_file")
+sleep 1
+if kill -0 "$escaped" 2>/dev/null; then
+    kill -KILL "$escaped" 2>/dev/null || true
+    fail "a process started in the TERM handler survived ($escaped)"
+fi
+printf '== process created during TERM handling: status %s\n' "$status"
+
+
+
 # P2: an unrecognized banner must be probed, not written off, on a platform
 # without `setsid`. The wrapper below is what a site-installed launcher looks
 # like: an opaque `--version` that forwards everything else to the real one.
@@ -118,6 +145,21 @@ WRAPPER
 chmod +x "$wrapper"
 
 source "$root_dir/scripts/mpi-launcher.sh"
+
+# P2, second reproduction: a launcher whose --version never returns must not
+# block detection; the banner query carries its own deadline.
+hanging=$tmp_dir/hanging-launcher
+cat >"$hanging" <<HANGING
+#!/bin/sh
+if [ "\$1" = --version ]; then exec sleep 300; fi
+exit 0
+HANGING
+chmod +x "$hanging"
+started=$SECONDS
+mpi_launcher_supports_oversubscribe "$hanging" || true
+elapsed=$((SECONDS - started))
+((elapsed <= 10 + bounded_grace + 2)) || fail "the banner query was not bounded: ${elapsed}s"
+printf '== hanging launcher banner: %ss\n' "$elapsed"
 if ! mpi_launcher_supports_oversubscribe "$wrapper"; then
     fail 'an unrecognized banner was reported as unsupported without probing the launcher'
 fi
