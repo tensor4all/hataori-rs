@@ -260,3 +260,21 @@ fn allowed_cpus_is_non_empty_and_sorted() {
     assert!(!cpus.is_empty());
     assert!(cpus.windows(2).all(|pair| pair[0] < pair[1]));
 }
+
+/// The mask `allowed_cpus` returns is the one `Domain::managed` validates,
+/// against: a CPU outside it is rejected, and the returned ids are accepted.
+/// A hardcoded `0..threads` fails this whenever the process mask omits cpu 0.
+#[cfg(all(feature = "rayon", target_os = "linux"))]
+#[test]
+fn allowed_cpus_is_the_mask_managed_validates_against() {
+    let cpus = allowed_cpus().unwrap();
+    if let Some(outside) = (0..libc::CPU_SETSIZE as usize).find(|cpu| !cpus.contains(cpu)) {
+        let error = Domain::managed(vec![outside], 1).unwrap_err();
+        assert!(
+            matches!(error, DomainBuildError::CpuNotAllowed { cpu } if cpu == outside),
+            "cpu {outside} is outside the mask {cpus:?}, but managed domain did not reject it: {error}"
+        );
+    }
+    let domain = Domain::managed(cpus[..1].to_vec(), 1).unwrap();
+    assert_eq!(domain.worker_count(), 1);
+}

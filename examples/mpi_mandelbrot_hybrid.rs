@@ -62,7 +62,12 @@ fn initialize_funneled() -> Universe {
 /// relative to the total number of compute threads (`size * workers`)
 /// because in hybrid mode every batch is internally subdivided by Rayon.
 fn batch_size(param: &Param, size: i32, workers: usize, factor: usize) -> NonZeroUsize {
-    let threads = (size as usize).max(1) * workers.max(1) * factor.max(1);
+    // Saturating: `--workers` and `--batch-factor` are user input; a wrapped
+    // product would divide by zero before the worker request is validated.
+    let threads = (size as usize)
+        .max(1)
+        .saturating_mul(workers.max(1))
+        .saturating_mul(factor.max(1));
     NonZeroUsize::new(
         (param.width / threads)
             .max(MIN_BATCH_COLUMNS)
@@ -125,12 +130,15 @@ fn render<C: Communicator>(
 }
 // snippet-end:hybrid-call
 
-/// Builds this rank's managed pool from the CPUs the process may use.
+/// Rejects a worker request this process cannot honour.
 ///
 /// Asking for more workers than the affinity mask allows is a readable
 /// error, not a panic: a panicking rank leaves the others in a collective
 /// until the launcher is killed.
-fn managed_domain(workers: usize) -> Result<Domain, String> {
+fn check_worker_request(workers: usize) -> Result<(), String> {
+    if workers == 0 {
+        return Err("--workers must be greater than zero".to_owned());
+    }
     let allowed = hataori::allowed_cpus().map_err(|error| format!("affinity query: {error}"))?;
     if allowed.len() < workers {
         return Err(format!(
@@ -138,6 +146,13 @@ fn managed_domain(workers: usize) -> Result<Domain, String> {
             allowed.len()
         ));
     }
+    Ok(())
+}
+
+/// Builds this rank's managed pool from the CPUs the process may use.
+fn managed_domain(workers: usize) -> Result<Domain, String> {
+    check_worker_request(workers)?;
+    let allowed = hataori::allowed_cpus().map_err(|error| format!("affinity query: {error}"))?;
     Domain::managed(allowed[..workers].to_vec(), workers)
         .map_err(|error| format!("rayon domain: {error}"))
 }
@@ -149,6 +164,12 @@ pub fn main() {
     let rank = world.rank();
     let size = world.size();
     let workers = mandelbrot_common::arg_thread_count("--workers");
+    // Validate the request before any batch-size arithmetic, which multiplies
+    // the rank count, the worker count and the batch factor.
+    if let Err(message) = check_worker_request(workers) {
+        eprintln!("rank {rank}: {message}");
+        world.abort(1);
+    }
 
     let param = Param::from_args();
     let factor = mandelbrot_common::arg_usize("--batch-factor", 32);

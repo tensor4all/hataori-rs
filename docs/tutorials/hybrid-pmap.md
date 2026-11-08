@@ -115,7 +115,12 @@ fn render<C: Communicator>(
 /// relative to the total number of compute threads (`size * workers`)
 /// because in hybrid mode every batch is internally subdivided by Rayon.
 fn batch_size(param: &Param, size: i32, workers: usize, factor: usize) -> NonZeroUsize {
-    let threads = (size as usize).max(1) * workers.max(1) * factor.max(1);
+    // Saturating: `--workers` and `--batch-factor` are user input; a wrapped
+    // product would divide by zero before the worker request is validated.
+    let threads = (size as usize)
+        .max(1)
+        .saturating_mul(workers.max(1))
+        .saturating_mul(factor.max(1));
     NonZeroUsize::new(
         (param.width / threads)
             .max(MIN_BATCH_COLUMNS)
