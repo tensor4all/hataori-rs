@@ -57,7 +57,7 @@ undrained() {
 # the macOS situation.
 shim=$tmp_dir/bin
 mkdir -p "$shim"
-for tool in sh python3 sleep kill ps awk mktemp rm cat ls grep dirname chmod tr pgrep mkdir env head wc mkfifo; do
+for tool in sh bash python3 sleep kill ps awk mktemp rm cat ls grep dirname chmod tr pgrep mkdir env head wc mkfifo; do
     path=$(command -v "$tool") || fail "missing tool for the shim: $tool"
     ln -s "$path" "$shim/$tool"
 done
@@ -241,6 +241,55 @@ printf '== caller that stops reading stderr: %ss, status %s (1s bound, 4 MiB chi
 ((status == 0)) || fail "a command that succeeded reported $status"
 ((elapsed <= 3 * bounded_replay_secs + 1)) ||
     fail "stderr backpressure held the caller: ${elapsed}s for a $((3 * bounded_replay_secs))s replay budget"
+
+# P3 (issue 43, review finding 1) as the review reproduced it: both of the
+# caller's streams on one pipe nobody drains, driven from Python with
+# `stdout=PIPE, stderr=STDOUT` and a wait timeout. At 3a5e1e2 the child was still
+# alive at 6 s and never reached the statement after `bounded`.
+review_repro=$tmp_dir/review-repro.py
+cat >"$review_repro" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+import time
+
+root, marker = sys.argv[1], sys.argv[2]
+# The trailing statement writes to a file, not to the merged pipe: a caller that
+# is not draining cannot receive anything, and this fixture must not add a block
+# of its own to the one it is measuring.
+script = (
+    "source '%s/scripts/bounded-run.sh'\n"
+    "bounded 1 python3 -c 'import sys; sys.stderr.write(\"x\" * 4194304)'\n"
+    "printf 'RETURNED %%s\\n' \"$?\" >'%s'\n" % (root, marker)
+)
+started = time.monotonic()
+child = subprocess.Popen(
+    ["bash", "-c", script],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+    start_new_session=True,
+    env={**os.environ, "HATAORI_BOUNDED_SESSION_SCAN": "none"},
+)
+try:
+    # `wait`, not `communicate`: the pipe is deliberately left undrained.
+    child.wait(timeout=6)
+except subprocess.TimeoutExpired:
+    os.killpg(child.pid, signal.SIGKILL)
+    child.wait()
+    print("still blocked after %.2fs (the bound was 1s)" % (time.monotonic() - started))
+    sys.exit(1)
+elapsed = time.monotonic() - started
+reached = open(marker).read().strip() if os.path.exists(marker) else "<nothing>"
+print("%.2fs rc=%s %s" % (elapsed, child.returncode, reached))
+if child.returncode != 0 or reached != "RETURNED 0":
+    print("the statement after `bounded` did not run cleanly")
+    sys.exit(1)
+PY
+if ! line=$(python3 "$review_repro" "$root_dir" "$tmp_dir/review-repro.ret" 2>&1); then
+    fail "the review's reproduction still blocks: $line"
+fi
+printf '== review reproduction (stdout=PIPE, stderr=STDOUT, 6s wait): %s\n' "$line"
 
 # P3 (issue 43, review finding 2): an ordinary `set -e` caller — no
 # `|| status=$?`, the shape `run_direct()` has — with its stdout on a pipe nobody
