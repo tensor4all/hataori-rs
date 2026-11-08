@@ -252,3 +252,11 @@ fn managed_non_linux_placement_is_caller_declared() {
         Some(PlacementStatus::CallerDeclared)
     );
 }
+
+#[cfg(feature = "rayon")]
+#[test]
+fn allowed_cpus_is_non_empty_and_sorted() {
+    let cpus = allowed_cpus().unwrap();
+    assert!(!cpus.is_empty());
+    assert!(cpus.windows(2).all(|pair| pair[0] < pair[1]));
+}

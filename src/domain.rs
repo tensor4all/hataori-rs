@@ -532,6 +532,36 @@ fn process_allowed_cpus() -> Result<std::collections::HashSet<usize>, DomainBuil
     Ok(cpus)
 }
 
+/// Returns the CPUs this process may currently run on, in ascending order.
+///
+/// [`Domain::managed`] validates a requested CPU set against this mask on
+/// Linux, so a launcher that narrows the affinity changes the answer: with
+/// `mpiexec --bind-to core` a rank may see a single CPU, and a caller that
+/// hardcodes `0..workers` then fails with [`DomainBuildError::CpuNotAllowed`].
+/// Derive the set a managed domain may use from this list instead.
+///
+/// On platforms where affinity is not enforced the returned list is
+/// `0..available_parallelism`, the same declaration [`Domain::managed`]
+/// accepts there.
+///
+/// # Errors
+///
+/// Returns [`DomainBuildError::AffinityQuery`] when the mask cannot be read.
+#[cfg(feature = "rayon")]
+pub fn allowed_cpus() -> Result<Vec<usize>, DomainBuildError> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut cpus: Vec<usize> = process_allowed_cpus()?.into_iter().collect();
+        cpus.sort_unstable();
+        Ok(cpus)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let count = std::thread::available_parallelism().map_or(1, |count| count.get());
+        Ok((0..count).collect())
+    }
+}
+
 #[cfg(feature = "rayon")]
 trait Pinner: Send + Sync {
     fn pin_and_verify(&self, cpu: usize) -> Result<(), String>;
