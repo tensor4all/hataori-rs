@@ -17,9 +17,10 @@ trap 'rm -rf -- "$tmp_dir"' EXIT
 cd "$root_dir"
 export BINDGEN_EXTRA_CLANG_ARGS=${BINDGEN_EXTRA_CLANG_ARGS:-"-I$(gcc -print-file-name=include)"}
 
+source "$root_dir/scripts/mpi-launcher.sh"
 launcher=${MPIEXEC:-mpiexec}
 launcher_flags=()
-if "$launcher" --version 2>&1 | grep -Eq 'Open MPI|OpenRTE'; then
+if mpi_launcher_supports_oversubscribe "$launcher"; then
     launcher_flags+=(--oversubscribe)
     if ((EUID == 0)); then
         launcher_flags+=(--allow-run-as-root)

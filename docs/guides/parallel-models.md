@@ -44,6 +44,11 @@ Tutorial: [Serial map](../tutorials/serial-map.md).
 
 A `Domain` is an explicit Rayon pool plus a declared CPU set:
 
+- `allowed_cpus()` returns the CPU ids this process may run on (the Linux
+  affinity mask, otherwise `0..available_parallelism`). It is the supported
+  source for a `cpu_set`: `Domain::managed` rejects an id the process may not
+  run on (`DomainBuildError::CpuNotAllowed`), and `0..workers` is wrong
+  wherever the process does not start on cpu 0.
 - `Domain::managed(cpu_set, workers)` creates and owns the pool. On Linux
   every worker is pinned to a CPU from `cpu_set` and the placement is verified
   before the constructor returns (`PlacementStatus::Verified`). On other

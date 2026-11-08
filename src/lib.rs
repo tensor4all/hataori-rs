@@ -16,12 +16,12 @@ mod scheduler;
 #[cfg(any(feature = "mpi", feature = "rsmpi-rt"))]
 mod wire;
 
+#[cfg(feature = "rayon")]
+pub use domain::{allowed_cpus, DomainBuildError, PlacementStatus, PoolOwnership};
 pub use domain::{
     Domain, DomainAdmission, DomainBusy, DomainId, LocalMode, NegativeRank, Place,
     UnsupportedDomainId,
 };
-#[cfg(feature = "rayon")]
-pub use domain::{DomainBuildError, PlacementStatus, PoolOwnership};
 #[cfg(feature = "runtime")]
 pub use hataori_algorithms as algorithms;
 #[cfg(feature = "runtime")]

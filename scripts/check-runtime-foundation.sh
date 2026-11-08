@@ -37,15 +37,17 @@ setsid timeout --signal=TERM --kill-after=2s 30s target/debug/tcp_transport_smok
 
 cargo build -p hataori-runtime-foundation --no-default-features --features mpi \
     --bin mpi_transport_smoke
+source "$root_dir/scripts/mpi-launcher.sh"
 launcher=${MPIEXEC:-mpiexec}
 launcher_flags=()
-if "$launcher" --version 2>&1 | grep -Eq 'Open MPI|OpenRTE'; then
+if mpi_launcher_supports_oversubscribe "$launcher"; then
     launcher_flags+=(--oversubscribe)
     if ((EUID == 0)); then
         launcher_flags+=(--allow-run-as-root)
     fi
 fi
-for count in 1 2 4; do
+rank_counts=$(mpi_rank_counts 4)
+for count in $rank_counts; do
     output=$(mktemp)
     set +e
     env -u DISPLAY setsid timeout --signal=TERM --kill-after=2s 45s \

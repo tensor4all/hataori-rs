@@ -28,7 +28,15 @@ mod mandelbrot_common;
 /// at startup; macOS does not enforce affinity, so there the set is only a
 /// declaration.
 fn managed_domain(threads: usize) -> Domain {
-    let cpu_set: Vec<usize> = (0..threads).collect();
+    // The mask decides which ids are admissible: a launcher or the runner may
+    // reserve cpu 0, so `0..threads` is not guaranteed to be in it.
+    let allowed = hataori::allowed_cpus().expect("affinity query");
+    assert!(
+        threads > 0 && allowed.len() >= threads,
+        "{threads} threads requested, but this process may only use {} CPU(s) {allowed:?}",
+        allowed.len()
+    );
+    let cpu_set: Vec<usize> = allowed[..threads].to_vec();
     let domain = Domain::managed(cpu_set, threads).expect("rayon domain");
     assert_eq!(domain.worker_count(), threads);
     assert_eq!(domain.pool_ownership(), Some(PoolOwnership::Managed));

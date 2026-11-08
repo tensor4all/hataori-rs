@@ -16,6 +16,11 @@ scripts/check-core.sh /absolute/path/to/libmpiwrapper.so \
 `.github/workflows/ci.yml` builds that exact MPIwrapper source revision against
 Open MPI and runs the same entry point. No prebuilt fixture or secret is used.
 
+The MPI rank sweeps below are written as `n=1/2/4`. `scripts/mpi-launcher.sh`
+runs `1, 2, min(4, CPUs this process may use)`, so a host or runner whose
+affinity mask has fewer CPUs runs its largest count instead of four ranks;
+on the current runner the sweep is `n=1,2,4`.
+
 ## Feature, dependency, lint, and documentation matrix
 
 | Contract | Evidence |
