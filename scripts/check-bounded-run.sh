@@ -25,7 +25,7 @@ fail() {
 # the macOS situation.
 shim=$tmp_dir/bin
 mkdir -p "$shim"
-for tool in sh python3 sleep kill ps awk mktemp rm cat ls grep dirname chmod tr; do
+for tool in sh python3 sleep kill ps awk mktemp rm cat ls grep dirname chmod tr pgrep mkdir env; do
     path=$(command -v "$tool") || fail "missing tool for the shim: $tool"
     ln -s "$path" "$shim/$tool"
 done
@@ -134,8 +134,8 @@ printf '== process created during TERM handling: status %s\n' "$status"
 # killed when the command returns, so the substitution returns with the bound.
 leak=$tmp_dir/stdout-holder
 started=$SECONDS
-output=$(bounded 1 sh -c "sleep 30 & echo \$! >$leak; echo banner")
-status=$?
+status=0
+output=$(bounded 1 sh -c "sleep 30 & echo \$! >$leak; echo banner") || status=$?
 elapsed=$((SECONDS - started))
 printf '== background child holding stdout: %ss, status %s, output %s\n' \
     "$elapsed" "$status" "$output"
@@ -157,18 +157,18 @@ fi
 # (dead, and therefore reparented) child can find it. The session does: `setpgrp`
 # changes the group, not the session.
 started=$SECONDS
-output=$(bounded 1 python3 -c '
+status=0
+output=$(bounded 2 python3 -c '
 import os, subprocess
 child = subprocess.Popen(["sleep", "30"], preexec_fn=os.setpgrp)
 print(child.pid)
-')
-status=$?
+') || status=$?
 elapsed=$((SECONDS - started))
 printf '== descendant in a new process group, parent exits: %ss, status %s\n' \
     "$elapsed" "$status"
 ((status == 0)) || fail "a command that succeeded reported $status"
-((elapsed <= 1 + bounded_grace)) ||
-    fail "the caller waited for a new-group descendant: ${elapsed}s for a 1s bound"
+((elapsed <= 2 + bounded_grace)) ||
+    fail "the caller waited for a new-group descendant: ${elapsed}s for a 2s bound"
 new_group=$(printf '%s' "$output" | tr -d '[:space:]')
 [[ $new_group =~ ^[0-9]+$ ]] || fail "the fixture did not report its descendant: '$output'"
 if kill -0 "$new_group" 2>/dev/null; then
@@ -202,6 +202,83 @@ escaped_group=$(cat "$pid_file")
 if kill -0 "$escaped_group" 2>/dev/null; then
     kill -KILL "$escaped_group" 2>/dev/null || true
     fail "a new-group descendant started by the TERM handler survived ($escaped_group)"
+fi
+
+# The session scan is chosen by what actually works, not by whether `ps` accepts
+# the keyword: macOS accepts `-o sess=` and prints 0, and a keyword probe then
+# picked a scan that found nothing (the review measured the escape below at 30 s
+# against a 1 s bound). This reruns the new-group escape through each backend and
+# through a `ps` that emulates macOS.
+escape_fixture=$tmp_dir/escape-fixture.sh
+cat >"$escape_fixture" <<'FIXTURE'
+set -u
+source "$1/scripts/bounded-run.sh"
+started=$SECONDS
+status=0
+output=$(bounded 2 python3 -c '
+import os, subprocess
+child = subprocess.Popen(["sleep", "30"], preexec_fn=os.setpgrp)
+print(child.pid)
+') || status=$?
+elapsed=$((SECONDS - started))
+printf 'backend=%s elapsed=%ss status=%s\n' \
+    "$HATAORI_BOUNDED_SESSION_SCAN" "$elapsed" "$status"
+[[ $status == 0 ]] || exit 1
+((elapsed <= 2 + bounded_grace)) || exit 1
+if kill -0 "$output" 2>/dev/null; then
+    kill -KILL "$output" 2>/dev/null
+    exit 1
+fi
+FIXTURE
+shell=${BASH:-bash}
+
+macos_ps=$tmp_dir/macos-ps
+mkdir -p "$macos_ps"
+real_ps=$(command -v ps)
+cat >"$macos_ps/ps" <<MACOS
+#!/bin/sh
+case " \$* " in
+  *sess*) "$real_ps" "\$@" 2>/dev/null | awk '{ if (NF >= 2) print \$1, 0; else print \$0 }' ;;
+  *) exec "$real_ps" "\$@" ;;
+esac
+MACOS
+chmod +x "$macos_ps/ps"
+
+if ! line=$("$shell" "$escape_fixture" "$root_dir" 2>&1); then
+    fail "the auto-selected session scan did not clean up the escape: $line"
+fi
+printf '== session scan, auto: %s\n' "$line"
+
+for scan in ps pgrep; do
+    if [[ $scan == pgrep ]] && ! command -v pgrep >/dev/null 2>&1; then
+        continue
+    fi
+    if ! line=$(HATAORI_BOUNDED_SESSION_SCAN=$scan "$shell" "$escape_fixture" "$root_dir" 2>&1); then
+        fail "the forced $scan scan did not clean up the escape: $line"
+    fi
+    [[ $line == "backend=$scan "* ]] || fail "the forced $scan scan was not used: $line"
+    printf '== session scan, forced %s: %s\n' "$scan" "$line"
+done
+
+if ! command -v pgrep >/dev/null 2>&1; then
+    printf '== session scan, macOS-like ps: skipped (no pgrep)\n'
+else
+    # Ask the probe itself, in a shell where `ps` reports 0 for the session id.
+    probe_line=$(
+        # `/usr/bin` is already on this PATH so a login/module hook does not
+        # re-prepend it ahead of the fake.
+        env PATH="$macos_ps:$PATH:/usr/bin" "$shell" -c \
+            'source "$1/scripts/bounded-run.sh"
+printf "ps=%s backend=%s\n" "$(command -v ps)" "$(bounded_detect_session_scan)"' \
+            _ "$root_dir" 2>&1
+    )
+    if [[ $probe_line != "ps=$macos_ps/ps backend="* ]]; then
+        printf '== session scan, macOS-like ps: skipped (ps not shadowed here: %s)\n' "$probe_line"
+    else
+        [[ $probe_line == *"backend=pgrep" ]] ||
+            fail "a ps that reports sess=0 did not fall through to pgrep: $probe_line"
+        printf '== session scan, macOS-like ps: %s\n' "$probe_line"
+    fi
 fi
 
 # P2: an unrecognized banner must be probed, not written off, on a platform

@@ -55,31 +55,57 @@ bounded_tree_pids() {
     echo "$parent"
 }
 
-# Prints the PIDs in session SID (the session leader's pid), the leader included.
-# Empty when `ps` cannot report sessions, which leaves the group and tree sweeps.
-# Whether this `ps` reports a session id at all; probed once, because the
-# keyword is not universal.
-if [[ -z ${HATAORI_BOUNDED_SESSION_VIA_PS:-} ]]; then
-    if ps -A -o pid= -o sess= >/dev/null 2>&1; then
-        HATAORI_BOUNDED_SESSION_VIA_PS=1
+# Which scan can actually report a numeric session id here? The *semantics* are
+# what matter: macOS `ps -o sess=` accepts the keyword and prints 0, so probing
+# the keyword selected a scan that matched nothing and never fell through to
+# `pgrep` (an escaping descendant then took 30 s against a 1 s bound). This probes
+# both scans against this process's own session id and keeps the one that finds it.
+bounded_detect_session_scan() {
+    local sid
+    sid=$(python3 -c 'import os; print(os.getsid(0))' 2>/dev/null) || {
+        printf 'none'
+        return
+    }
+    if ps -A -o pid= -o sess= 2>/dev/null |
+        awk -v pid="$$" -v sid="$sid" '$1 == pid && $2 == sid { found = 1 } END { exit(found ? 0 : 1) }'; then
+        printf 'ps'
+        return
+    fi
+    if command -v pgrep >/dev/null 2>&1 &&
+        pgrep -s "$sid" 2>/dev/null |
+        awk -v pid="$$" '$1 == pid { found = 1 } END { exit(found ? 0 : 1) }'; then
+        printf 'pgrep'
+        return
+    fi
+    printf 'none'
+}
+
+# Auto by default; `HATAORI_BOUNDED_SESSION_SCAN=ps|pgrep|none` pins it, which is
+# how the regression test exercises each backend.
+if [[ -z ${HATAORI_BOUNDED_SESSION_SCAN:-} ]]; then
+    if command -v python3 >/dev/null 2>&1; then
+        HATAORI_BOUNDED_SESSION_SCAN=$(bounded_detect_session_scan)
     else
-        HATAORI_BOUNDED_SESSION_VIA_PS=0
+        HATAORI_BOUNDED_SESSION_SCAN=none
     fi
 fi
 
+# Prints the PIDs in session SID (the session leader's pid), the leader included.
 bounded_session_pids() {
     local sid=$1 pid sess
-    if ((HATAORI_BOUNDED_SESSION_VIA_PS)); then
-        ps -A -o pid= -o sess= 2>/dev/null |
-            while read -r pid sess; do
-                if [[ $sess == "$sid" ]]; then
-                    echo "$pid"
-                fi
-            done
-    elif command -v pgrep >/dev/null 2>&1; then
-        # `pgrep -s` selects by session id where `ps` has no such keyword.
-        pgrep -s "$sid" 2>/dev/null || true
-    fi
+    case ${HATAORI_BOUNDED_SESSION_SCAN:-none} in
+        ps)
+            ps -A -o pid= -o sess= 2>/dev/null |
+                while read -r pid sess; do
+                    if [[ $sess == "$sid" ]]; then
+                        echo "$pid"
+                    fi
+                done
+            ;;
+        pgrep)
+            pgrep -s "$sid" 2>/dev/null || true
+            ;;
+    esac
     # Callers run under `set -e`: a scan that matched nothing is not a failure.
     return 0
 }
@@ -119,7 +145,7 @@ bounded() {
     # one with `os.setsid` in place of the command (`execvp`), so the pid we get is
     # the session leader; job control is the fallback, and it only reaches the
     # group.
-    if command -v python3 >/dev/null 2>&1; then
+    if [[ ${HATAORI_BOUNDED_SESSION_SCAN:-none} != none ]] && command -v python3 >/dev/null 2>&1; then
         session=1
         python3 -c 'import os, sys
 try:

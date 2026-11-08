@@ -152,6 +152,12 @@ run_direct rayon_mandelbrot --threads 2 --output rayon_mandelbrot.png
 build_lane mpi,tenferro mpi_mandelbrot_raw mpi_mandelbrot_pmap mpi_mandelbrot_placement
 run_mpi mpi_mandelbrot_raw --output mpi_mandelbrot_raw.png
 run_mpi mpi_mandelbrot_pmap --output mpi_mandelbrot_pmap.png
+# Same overflow boundary as the hybrid arm below, on the sequential example:
+# `--batch-factor 9223372036854775808` (2^63) makes `size * factor` wrap to zero
+# for two ranks under unchecked multiplication, and `width / per_rank` divides by
+# zero. The saturating product clamps to the minimum batch.
+run_mpi mpi_mandelbrot_pmap --batch-factor 9223372036854775808 \
+    --output mpi_mandelbrot_pmap.png
 run_mpi mpi_mandelbrot_placement --output mpi_mandelbrot_placement.png
 
 build_lane mpi,rayon,tenferro mpi_mandelbrot_hybrid

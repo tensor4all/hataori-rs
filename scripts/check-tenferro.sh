@@ -102,7 +102,12 @@ if command -v "$launcher" >/dev/null 2>&1 && command -v mpicc >/dev/null 2>&1; t
     if ((EUID == 0)); then
         mpi_flags+=(--allow-run-as-root)
     fi
-    if "$launcher" --version 2>&1 | grep -Eq 'Open MPI|OpenRTE'; then
+    # Bounded, like every other query in this file: a site wrapper whose
+    # `--version` hangs must not sit outside a deadline (`run` is this script's
+    # own `setsid timeout`; the shared helper's `bounded` is replaced by the
+    # retrying build wrapper below it, so it cannot be imported here). The family
+    # match also covers the PRRTE runtime Open MPI 5 reports.
+    if run 10 "$launcher" --version 2>&1 | grep -Eqi 'open[ -]?mpi|openrte|prrte|prte'; then
         # Let the rank see every online CPU; the lanes are the rank's own
         # threads.
         mpi_flags+=(--bind-to none)
