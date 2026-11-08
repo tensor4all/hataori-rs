@@ -25,7 +25,7 @@ fail() {
 # the macOS situation.
 shim=$tmp_dir/bin
 mkdir -p "$shim"
-for tool in sh python3 sleep kill ps awk mktemp rm cat ls grep dirname chmod; do
+for tool in sh python3 sleep kill ps awk mktemp rm cat ls grep dirname chmod tr; do
     path=$(command -v "$tool") || fail "missing tool for the shim: $tool"
     ln -s "$path" "$shim/$tool"
 done
@@ -151,6 +151,58 @@ if kill -0 "$holder" 2>/dev/null; then
 fi
 
 
+
+# P1, eighth reproduction: the escaped descendant starts a *new process group*
+# and its parent exits at once, so neither a group kill nor a tree walk from the
+# (dead, and therefore reparented) child can find it. The session does: `setpgrp`
+# changes the group, not the session.
+started=$SECONDS
+output=$(bounded 1 python3 -c '
+import os, subprocess
+child = subprocess.Popen(["sleep", "30"], preexec_fn=os.setpgrp)
+print(child.pid)
+')
+status=$?
+elapsed=$((SECONDS - started))
+printf '== descendant in a new process group, parent exits: %ss, status %s\n' \
+    "$elapsed" "$status"
+((status == 0)) || fail "a command that succeeded reported $status"
+((elapsed <= 1 + bounded_grace)) ||
+    fail "the caller waited for a new-group descendant: ${elapsed}s for a 1s bound"
+new_group=$(printf '%s' "$output" | tr -d '[:space:]')
+[[ $new_group =~ ^[0-9]+$ ]] || fail "the fixture did not report its descendant: '$output'"
+if kill -0 "$new_group" 2>/dev/null; then
+    kill -KILL "$new_group" 2>/dev/null || true
+    fail "a descendant in a new process group outlived the bound ($new_group)"
+fi
+
+# P1, ninth reproduction: the same escape from inside the TERM handler, which no
+# snapshot taken before the signal can contain.
+pid_file=$tmp_dir/termed-new-group
+started=$SECONDS
+status=0
+bounded 1 python3 -c '
+import os, signal, subprocess, sys, time
+def stop(*_):
+    child = subprocess.Popen(["sleep", "30"], preexec_fn=os.setpgrp)
+    with open(sys.argv[1], "w") as handle:
+        handle.write(str(child.pid))
+    sys.exit(0)
+signal.signal(signal.SIGTERM, stop)
+time.sleep(60)
+' "$pid_file" || status=$?
+elapsed=$((SECONDS - started))
+printf '== new process group started inside the TERM handler: %ss, status %s\n' \
+    "$elapsed" "$status"
+((status == 124)) || fail "an expired deadline reported $status instead of 124"
+((elapsed <= 1 + bounded_grace + 2)) ||
+    fail "the deadline was not enforced: ${elapsed}s for a 1s bound"
+[[ -s $pid_file ]] || fail 'the fixture did not record its descendant'
+escaped_group=$(cat "$pid_file")
+if kill -0 "$escaped_group" 2>/dev/null; then
+    kill -KILL "$escaped_group" 2>/dev/null || true
+    fail "a new-group descendant started by the TERM handler survived ($escaped_group)"
+fi
 
 # P2: an unrecognized banner must be probed, not written off, on a platform
 # without `setsid`. The wrapper below is what a site-installed launcher looks
