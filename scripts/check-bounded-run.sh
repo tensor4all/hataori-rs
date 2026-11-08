@@ -73,6 +73,36 @@ status=0
 bounded 5 sh -c 'exit 7' || status=$?
 ((status == 7)) || fail "a completed command reported $status instead of its own status"
 
+
+# P1, third reproduction: the parent ignores SIGTERM and its descendant does
+# not. The parent dies on the TERM, the descendant is reparented to PID 1, and
+# the escalation must still take it (the earlier fixtures tested the two cases
+# separately and missed this combination).
+pid_file=$tmp_dir/combining-parent
+started=$SECONDS
+status=0
+bounded 1 sh -c "sh -c 'trap \"\" TERM; exec sleep 30' & echo \$! >$pid_file; wait" || status=$?
+elapsed=$((SECONDS - started))
+((status != 0)) || fail 'a command whose parent ignores SIGTERM reported success'
+((elapsed <= 1 + bounded_grace + 2)) ||
+    fail "the deadline was not enforced: ${elapsed}s for a 1s bound"
+[[ -s $pid_file ]] || fail 'the fixture did not record its descendant'
+descendant=$(cat "$pid_file")
+sleep 1
+if kill -0 "$descendant" 2>/dev/null; then
+    fail "the escalation left descendant $descendant alive"
+fi
+printf '== ignoring parent with a descendant: %ss, status %s\n' "$elapsed" "$status"
+
+# P1, fourth reproduction: a command that traps TERM and exits zero must still
+# be reported as a timeout. An arm that writes its output and then hangs could
+# otherwise satisfy both the status and the file-existence checks.
+status=0
+bounded 1 python3 -c 'import signal, sys, time; signal.signal(signal.SIGTERM, lambda *_: sys.exit(0)); time.sleep(30)' ||
+    status=$?
+((status != 0)) || fail 'a command that exits zero on SIGTERM reported success'
+printf '== zero exit after SIGTERM: status %s\n' "$status"
+
 # P2: an unrecognized banner must be probed, not written off, on a platform
 # without `setsid`. The wrapper below is what a site-installed launcher looks
 # like: an opaque `--version` that forwards everything else to the real one.
