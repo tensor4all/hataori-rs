@@ -156,6 +156,14 @@ run_mpi mpi_mandelbrot_placement --output mpi_mandelbrot_placement.png
 
 build_lane mpi,rayon,tenferro mpi_mandelbrot_hybrid
 run_mpi mpi_mandelbrot_hybrid --workers 2 --output mpi_mandelbrot_hybrid.png
+# Overflow boundary of the batch arithmetic: with two ranks and two workers,
+# `--batch-factor 4611686018427387904` (2^62) makes `size * workers * factor`
+# wrap to zero under unchecked multiplication, and the `width / threads` that
+# follows divides by zero. The saturating product clamps to the minimum batch,
+# so this run must succeed. The oversized `--workers` cases below cannot catch
+# that mutation: they abort in `main` before `batch_size()` is computed.
+run_mpi mpi_mandelbrot_hybrid --workers 2 --batch-factor 4611686018427387904 \
+    --output mpi_mandelbrot_hybrid.png
 # #41: an inadmissible worker request must abort the job instead of leaving the other
 # rank in the collective until the job timeout. The value also overflows a naive
 # `size * workers * factor` product.
