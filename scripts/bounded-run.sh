@@ -57,14 +57,29 @@ bounded_tree_pids() {
 
 # Prints the PIDs in session SID (the session leader's pid), the leader included.
 # Empty when `ps` cannot report sessions, which leaves the group and tree sweeps.
+# Whether this `ps` reports a session id at all; probed once, because the
+# keyword is not universal.
+if [[ -z ${HATAORI_BOUNDED_SESSION_VIA_PS:-} ]]; then
+    if ps -A -o pid= -o sess= >/dev/null 2>&1; then
+        HATAORI_BOUNDED_SESSION_VIA_PS=1
+    else
+        HATAORI_BOUNDED_SESSION_VIA_PS=0
+    fi
+fi
+
 bounded_session_pids() {
     local sid=$1 pid sess
-    ps -A -o pid= -o sess= 2>/dev/null |
-        while read -r pid sess; do
-            if [[ $sess == "$sid" ]]; then
-                echo "$pid"
-            fi
-        done
+    if ((HATAORI_BOUNDED_SESSION_VIA_PS)); then
+        ps -A -o pid= -o sess= 2>/dev/null |
+            while read -r pid sess; do
+                if [[ $sess == "$sid" ]]; then
+                    echo "$pid"
+                fi
+            done
+    elif command -v pgrep >/dev/null 2>&1; then
+        # `pgrep -s` selects by session id where `ps` has no such keyword.
+        pgrep -s "$sid" 2>/dev/null || true
+    fi
     # Callers run under `set -e`: a scan that matched nothing is not a failure.
     return 0
 }
