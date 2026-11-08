@@ -88,8 +88,18 @@ fn render<C: Communicator>(
     let (x, y) = param.make_axes();
 
     // The worker count may differ per rank; the `PmapOptions` must not.
-    let cpu_set: Vec<usize> = (0..workers).collect();
-    let domain = Domain::managed(cpu_set, workers).expect("rayon domain");
+    // The CPU ids come from this rank's own affinity mask: `mpiexec
+    // --bind-to core` (or a runner that reserves cpu 0) narrows it, so
+    // `0..workers` is not guaranteed to be admissible.
+    let domain = match managed_domain(workers) {
+        Ok(domain) => domain,
+        Err(message) => {
+            eprintln!("rank {rank}: {message}");
+            // Rank 0 alone cannot report this: every other rank stays in the
+            // collective, so tear the whole job down instead of hanging.
+            world.abort(1)
+        }
+    };
 
     let input = (rank == 0).then(|| (0..param.width).collect::<Vec<usize>>());
     let columns = pmap(
@@ -114,6 +124,23 @@ fn render<C: Communicator>(
     })
 }
 // snippet-end:hybrid-call
+
+/// Builds this rank's managed pool from the CPUs the process may use.
+///
+/// Asking for more workers than the affinity mask allows is a readable
+/// error, not a panic: a panicking rank leaves the others in a collective
+/// until the launcher is killed.
+fn managed_domain(workers: usize) -> Result<Domain, String> {
+    let allowed = hataori::allowed_cpus().map_err(|error| format!("affinity query: {error}"))?;
+    if allowed.len() < workers {
+        return Err(format!(
+            "{workers} workers requested, but this process may only use {} CPU(s) {allowed:?}; lower --workers or launch with --bind-to none",
+            allowed.len()
+        ));
+    }
+    Domain::managed(allowed[..workers].to_vec(), workers)
+        .map_err(|error| format!("rayon domain: {error}"))
+}
 
 /// `pub` so that the `rsmpi_rt_*` wrapper example can reuse this file.
 pub fn main() {
@@ -171,6 +198,9 @@ pub fn main() {
             print_info("Saved", png_path);
         }
         (None, None) => {}
-        _ => panic!("only the root receives the result"),
+        _ => {
+            eprintln!("rank {rank}: only the root receives the result");
+            world.abort(1)
+        }
     }
 }

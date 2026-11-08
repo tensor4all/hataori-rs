@@ -53,8 +53,18 @@ fn render<C: Communicator>(
     let (x, y) = param.make_axes();
 
     // The worker count may differ per rank; the `PmapOptions` must not.
-    let cpu_set: Vec<usize> = (0..workers).collect();
-    let domain = Domain::managed(cpu_set, workers).expect("rayon domain");
+    // The CPU ids come from this rank's own affinity mask: `mpiexec
+    // --bind-to core` (or a runner that reserves cpu 0) narrows it, so
+    // `0..workers` is not guaranteed to be admissible.
+    let domain = match managed_domain(workers) {
+        Ok(domain) => domain,
+        Err(message) => {
+            eprintln!("rank {rank}: {message}");
+            // Rank 0 alone cannot report this: every other rank stays in the
+            // collective, so tear the whole job down instead of hanging.
+            world.abort(1)
+        }
+    };
 
     let input = (rank == 0).then(|| (0..param.width).collect::<Vec<usize>>());
     let columns = pmap(
