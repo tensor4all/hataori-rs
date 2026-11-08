@@ -31,7 +31,9 @@ if command -v timeout >/dev/null 2>&1; then
     timeout --signal=TERM --kill-after=1s 1s true >/dev/null 2>&1 && have_timeout=1
 fi
 
-# `bounded SECONDS COMMAND...`: run COMMAND, killing it after SECONDS.
+# `bounded SECONDS COMMAND...`: run COMMAND, killing it after SECONDS. It is a
+# shell function, so a CPU prefix has to go *inside* it — `taskset -c 2,3 bounded
+# ...` asks taskset to exec a name that is not on PATH (exit 127).
 bounded() {
     local secs=$1
     shift
@@ -96,8 +98,8 @@ run_direct() {
     # satisfy the assertion below for a run that never wrote one.
     rm -f "$work_dir/$example.png"
     echo "== run: $example $*"
-    (cd "$work_dir" && ${cpu_prefix[@]+"${cpu_prefix[@]}"} \
-        bounded "$arm_timeout" \
+    (cd "$work_dir" && \
+        bounded "$arm_timeout" ${cpu_prefix[@]+"${cpu_prefix[@]}"} \
         "$root_dir/target/release/examples/$example" "${size_args[@]}" "$@")
     [[ -f $work_dir/$example.png ]]
 }
@@ -107,8 +109,8 @@ run_mpi() {
     shift
     rm -f "$work_dir/$example.png"
     echo "== run: $example (mpiexec -n $ranks) $*"
-    (cd "$work_dir" && ${cpu_prefix[@]+"${cpu_prefix[@]}"} \
-        bounded "$arm_timeout" \
+    (cd "$work_dir" && \
+        bounded "$arm_timeout" ${cpu_prefix[@]+"${cpu_prefix[@]}"} \
         "${launcher[@]}" -n "$ranks" \
         "$root_dir/target/release/examples/$example" "${size_args[@]}" "$@")
     [[ -f $work_dir/$example.png ]]
@@ -127,8 +129,8 @@ run_mpi_fails_fast() {
     rm -f "$work_dir/$example.png" "$log"
     echo "== expect a bounded failure: $example (mpiexec -n $ranks) $*"
     local started=$SECONDS rc=0
-    if (cd "$work_dir" && ${cpu_prefix[@]+"${cpu_prefix[@]}"} \
-        bounded "$abort_timeout" \
+    if (cd "$work_dir" && \
+        bounded "$abort_timeout" ${cpu_prefix[@]+"${cpu_prefix[@]}"} \
         "${launcher[@]}" -n "$ranks" \
         "$root_dir/target/release/examples/$example" "${size_args[@]}" \
         --output "$example.png" "$@" >"$log" 2>&1); then
