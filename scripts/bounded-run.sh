@@ -41,8 +41,11 @@
 #   for as long as the reader stayed away (measured: 4 MiB of output, 6.8 s). Each
 #   stream is replayed up to `bounded_replay_cap` bytes and for at most
 #   `bounded_replay_secs`, in the order stdout-then-stderr it always had, and
-#   whatever is left is dropped with a notice — so a stopped caller costs at most
-#   twice `bounded_replay_secs` beyond the deadline;
+#   whatever is left is dropped with a notice. The notice is replayed under the
+#   same bound, on the same stderr: a synchronous notice there blocked on the
+#   pipe whose replay had just timed out (measured: still blocked after 6 s with
+#   a 1 s bound). A stopped caller therefore costs at most three
+#   `bounded_replay_secs` beyond the deadline and never more;
 # - the deadline is recorded, so a command that traps TERM and exits 0 is
 #   reported as a timeout (124, as `timeout` reports it) instead of a success.
 
@@ -55,8 +58,9 @@ HATAORI_BOUNDED_RUN_SH=1
 bounded_grace=${HATAORI_BOUNDED_GRACE:-2}
 
 # Bytes replayed from each spooled stream, and the seconds each replay may take
-# before the rest is dropped (see `bounded_replay_stream`). Two streams, so a
-# caller that stops reading costs at most twice this beyond the deadline.
+# before the rest is dropped (see `bounded_replay_stream`). Two streams plus the
+# truncation notice, so a caller that stops reading costs at most three times
+# this beyond the deadline.
 bounded_replay_cap=${HATAORI_BOUNDED_REPLAY_CAP:-1048576}
 bounded_replay_secs=${HATAORI_BOUNDED_REPLAY_SECS:-1}
 
@@ -155,22 +159,35 @@ bounded_signal_session() {
 # Replays spooled FILE on FD without ever blocking the caller. The replay writes
 # on the caller's pipe, so a caller that stops reading parks it once the pipe is
 # full — a synchronous `cat` held `bounded 1` for the reader's whole absence
-# (measured: 4 MiB of output, 6.8 s). Dropping the rest with a notice is the
-# correct outcome here; hanging is the bug.
+# (measured: 4 MiB of output, 6.8 s). Dropping the rest is the correct outcome
+# here; hanging is the bug. The notice is left in `bounded_replay_cut` for the
+# caller to replay: printing it here would block on the very pipe whose replay
+# just timed out.
 bounded_replay_stream() {
     local file=$1 fd=$2 label=$3 size pid killer status=0
+    bounded_replay_cut=
     [[ -s $file ]] || return 0
     size=$(wc -c <"$file" 2>/dev/null) || size=0
     head -c "$bounded_replay_cap" "$file" >&"$fd" 2>/dev/null &
     pid=$!
-    (sleep "$bounded_replay_secs"; kill -KILL "$pid" 2>/dev/null) &
+    # The killer gets its own descriptors: a `sleep` that inherited the caller's
+    # stdout kept a command substitution open for its whole life (measured: 5 s
+    # for `output=$(bounded 1 printf banner)`).
+    (sleep "$bounded_replay_secs"; bounded_signal_pids KILL "$pid") >/dev/null 2>&1 &
     killer=$!
     wait "$pid" 2>/dev/null || status=$?
-    kill -KILL "$killer" 2>/dev/null
+    # Reap the killer and its `sleep`. `bounded_signal_pids` ignores a process
+    # that already exited, and the killer has when it just fired: an unguarded
+    # `kill` there aborted a plain `set -e` caller after a successful run
+    # (measured: exit 1 after 1.28 s, never reaching the next statement).
+    # shellcheck disable=SC2046
+    bounded_signal_pids KILL $(bounded_tree_pids "$killer")
     wait "$killer" 2>/dev/null || true
-    # 137 is the kill above: the replay did not reach the end of its spool.
-    if ((size > bounded_replay_cap)) || ((status == 137)); then
-        printf '%s truncated after %s bytes\n' "$label" "$bounded_replay_cap" >&2
+    if ((size > bounded_replay_cap)); then
+        printf -v bounded_replay_cut '%s truncated after %s bytes\n' "$label" "$bounded_replay_cap"
+    elif ((status == 137)); then
+        # 137 is the kill above: the replay never reached the end of its spool.
+        printf -v bounded_replay_cut '%s truncated after %ss\n' "$label" "$bounded_replay_secs"
     fi
 }
 
@@ -178,7 +195,7 @@ bounded() {
     local secs=$1
     shift
     local child status=0 watchdog marker timed_out=0 monitor=0 session=0
-    local targets= stdout_file= stderr_file=
+    local targets= stdout_file= stderr_file= notice_file= notices=
     marker=$(mktemp "${TMPDIR:-/tmp}/hataori-bounded.XXXXXX")
     # Own copies of the output: a descendant holding the caller's pipe is what
     # kept a substitution waiting past the bound.
@@ -262,8 +279,16 @@ os.execvp(sys.argv[1], sys.argv[1:])' "$@" >"$stdout_file" 2>"$stderr_file" &
     # Replay what the command wrote. Its own descendants may still hold these
     # files, which is harmless: nothing the caller reads is shared with them.
     bounded_replay_stream "$stdout_file" 1 output
+    notices+=$bounded_replay_cut
     bounded_replay_stream "$stderr_file" 2 stderr
+    notices+=$bounded_replay_cut
     rm -f "$marker" "$stdout_file" "$stderr_file"
+    if [[ -n $notices ]]; then
+        notice_file=$(mktemp "${TMPDIR:-/tmp}/hataori-bounded-notice.XXXXXX")
+        printf '%s' "$notices" >"$notice_file"
+        bounded_replay_stream "$notice_file" 2 notice
+        rm -f "$notice_file"
+    fi
     if [[ $timed_out == 1 && $status == 0 ]]; then
         status=124
     fi

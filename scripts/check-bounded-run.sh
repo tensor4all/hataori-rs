@@ -7,7 +7,8 @@
 #   P2  the launcher probe must not report a supported launcher as unsupported
 #       on a platform without `setsid`;
 #   P3  the replay of the spooled output must not hold `bounded` past its bound
-#       when the caller stops reading.
+#       when the caller stops reading — not on stdout, not on stderr, not through
+#       the truncation notice, and not through the replay's own `sleep`.
 #
 # All of them run against the *fallback* paths. The tools that normally make the
 # fallback unnecessary (`setsid`, GNU `timeout`) are hidden with a PATH shim, so
@@ -16,18 +17,47 @@ set -Eeuo pipefail
 
 root_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 tmp_dir=$(mktemp -d)
-trap 'rm -rf -- "$tmp_dir"' EXIT
+undrained_pid=
+trap 'stop_fixture "${undrained_pid:-}"; rm -rf -- "$tmp_dir"' EXIT
 
 fail() {
     printf 'check-bounded-run: %s\n' "$*" >&2
     exit 1
 }
 
+stop_fixture() {
+    local pid=${1:-}
+    [[ -n $pid ]] || return 0
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+}
+
+# Waits for a background fixture to report FILE. A fixture that exits without
+# reporting, or that outlives LIMIT seconds, is the failure: a regression must
+# fail this script instead of hanging it.
+await_fixture() {
+    local limit=$1 file=$2 pid=$3 i
+    for ((i = 0; i < 10 * limit; i++)); do
+        [[ -s $file ]] && return 0
+        kill -0 "$pid" 2>/dev/null || return 1
+        sleep 0.1
+    done
+    return 1
+}
+
+# A read end nobody drains: `sleep` opens the fifo and never reads it, so a
+# writer blocks once the pipe buffer is full.
+undrained() {
+    mkfifo "$1"
+    sleep 300 <"$1" &
+    undrained_pid=$!
+}
+
 # A PATH with the tools these tests need but without `setsid`/`timeout`, which is
 # the macOS situation.
 shim=$tmp_dir/bin
 mkdir -p "$shim"
-for tool in sh python3 sleep kill ps awk mktemp rm cat ls grep dirname chmod tr pgrep mkdir env head wc; do
+for tool in sh python3 sleep kill ps awk mktemp rm cat ls grep dirname chmod tr pgrep mkdir env head wc mkfifo; do
     path=$(command -v "$tool") || fail "missing tool for the shim: $tool"
     ln -s "$path" "$shim/$tool"
 done
@@ -180,6 +210,91 @@ printf '== caller that stops reading: %ss, status %s (1s bound, 4 MiB child)\n' 
 ((status == 0)) || fail "a command that succeeded reported $status"
 ((elapsed <= 1 + bounded_grace)) ||
     fail "the replay outlived the bound: ${elapsed}s for a 1s bound"
+
+# P3 (issue 43, review finding 1): only *stderr* is backed up. The caller drains
+# its stdout and leaves its stderr on a pipe nobody reads, so the stderr replay is
+# cut at its deadline. The truncation notice used to be a synchronous `printf` on
+# that same stderr: at 3a5e1e2 `bounded 1` was still blocked after 6 s.
+undrained "$tmp_dir/stderr-sink"
+err_sink=$undrained_pid
+ret_file=$tmp_dir/stderr-backpressure
+rm -f "$ret_file"
+started=$SECONDS
+(
+    status=0
+    bounded 1 python3 -c 'import sys; sys.stderr.write("x" * 4194304)' \
+        >/dev/null 2>"$tmp_dir/stderr-sink" || status=$?
+    printf '%s\n' "$status" >"$ret_file"
+) &
+fixture=$!
+if ! await_fixture 8 "$ret_file" "$fixture"; then
+    stop_fixture "$fixture"
+    stop_fixture "$err_sink"
+    fail 'stderr backpressure blocked `bounded 1`: the truncation notice is not bounded'
+fi
+elapsed=$((SECONDS - started))
+status=$(cat "$ret_file")
+stop_fixture "$fixture"
+stop_fixture "$err_sink"
+printf '== caller that stops reading stderr: %ss, status %s (1s bound, 4 MiB child)\n' \
+    "$elapsed" "$status"
+((status == 0)) || fail "a command that succeeded reported $status"
+((elapsed <= 3 * bounded_replay_secs + 1)) ||
+    fail "stderr backpressure held the caller: ${elapsed}s for a $((3 * bounded_replay_secs))s replay budget"
+
+# P3 (issue 43, review finding 2): an ordinary `set -e` caller — no
+# `|| status=$?`, the shape `run_direct()` has — with its stdout on a pipe nobody
+# reads. The replay is cut at its deadline, so its killer has already fired and
+# exited; the unguarded `kill` of that dead killer aborted the caller (measured at
+# 3a5e1e2: exit 1 after ~1.28 s, never reaching the next statement).
+undrained "$tmp_dir/stdout-sink"
+out_sink=$undrained_pid
+ret_file=$tmp_dir/set-e-caller
+rm -f "$ret_file"
+started=$SECONDS
+(
+    set -e
+    bounded 1 head -c 4194304 /dev/zero >"$tmp_dir/stdout-sink"
+    printf 'reached\n' >"$ret_file"
+) 2>/dev/null &
+fixture=$!
+if ! await_fixture 8 "$ret_file" "$fixture"; then
+    status=0
+    if kill -0 "$fixture" 2>/dev/null; then
+        stop_fixture "$fixture"
+        stop_fixture "$out_sink"
+        fail "stdout backpressure held a plain \`set -e\` caller past $((SECONDS - started))s"
+    fi
+    wait "$fixture" 2>/dev/null || status=$?
+    stop_fixture "$out_sink"
+    fail "a plain \`set -e\` caller aborted with status $status although \`bounded\` succeeded"
+fi
+elapsed=$((SECONDS - started))
+stop_fixture "$fixture"
+stop_fixture "$out_sink"
+printf '== plain `set -e` caller, stdout not drained: %ss, reached its next statement\n' \
+    "$elapsed"
+((elapsed <= 3 * bounded_replay_secs + 1)) ||
+    fail "the replay outlived its budget: ${elapsed}s"
+
+# P3 (issue 43, review finding 3): the replay's own killer is what holds the
+# caller. `bounded` cancels it once the replay is done, but its `sleep` child kept
+# the inherited stdout, so a substitution waited for that sleep to expire
+# (measured at 3a5e1e2: 5 s for a 5 s replay window, on a run that took 0 s).
+saved_replay_secs=$bounded_replay_secs
+bounded_replay_secs=5
+started=$SECONDS
+status=0
+output=$(bounded 1 python3 -c 'import sys; sys.stdout.write("x" * 8388608)') || status=$?
+elapsed=$((SECONDS - started))
+bounded_replay_secs=$saved_replay_secs
+printf '== command substitution with a truncation: %ss, status %s (5s replay window, %s bytes)\n' \
+    "$elapsed" "$status" "${#output}"
+((status == 0)) || fail "a command that succeeded reported $status"
+((${#output} == bounded_replay_cap)) ||
+    fail "the substitution did not receive the capped replay: ${#output} bytes"
+((elapsed < 5)) ||
+    fail "the substitution waited for the replay's killed-off \`sleep\`: ${elapsed}s for a 5s replay window"
 
 # P1, eighth reproduction: the escaped descendant starts a *new process group*
 # and its parent exits at once, so neither a group kill nor a tree walk from the
