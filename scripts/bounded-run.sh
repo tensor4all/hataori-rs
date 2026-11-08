@@ -12,15 +12,24 @@
 # --signal=TERM --kill-after=2s 1s sh -c 'sh -c "trap \"\" TERM; exec sleep 30" &
 # wait'` returns 124 after 1 s and leaves the `sleep` under PPID 1).
 #
-# - the command runs in its own **session** (`python3` and `os.setsid`, or job
-#   control as the fallback), and the deadline signals every process in that
-#   session. A descendant that only changes its process group — `setpgrp`/
-#   `setpgid`, or a TERM handler that starts a new group — still inherits the
-#   session, and a descendant that is reparented to PID 1 keeps it, so neither
-#   escape hides it. The PID tree and the process group are signalled as well, for
-#   the fallback without a session and for anything that left it. Without
-#   `python3` there is no session to start, so the fallback (job control) reaches
-#   only the group and the tree: a descendant that calls `setpgrp` can escape it;
+# - the command's stdout and stderr go to temporary files that are replayed when
+#   the bound ends, so no descendant can keep the caller waiting by holding the
+#   pipe: without this, a stray that outlives the command made a command
+#   substitution block for the stray's whole lifetime (measured: 6 s for a 1 s
+#   bound), and on a platform with no session scan that stray cannot be found at
+#   all (macOS: `ps -o sess=` reports 0 and `pgrep` has no `-s`);
+# - where a session can be scanned (Linux: `ps -o sess=`), the command runs as the
+#   leader of its own session with `python3` and `os.setsid`, and the deadline
+#   signals every member of that session — `setpgrp` changes the group, not the
+#   session, so that escape is caught there too. Where no session scan exists
+#   (measured on macOS: `ps -A -o sess=` reports 0 for every process and `pgrep`
+#   rejects `-s`), the bound still ends on time and the caller never waits, but a
+#   descendant that changes its process group and is reparented before the deadline
+#   can survive. Polling the tree does not close that gap either: a poller observed
+#   the child of a `setpgrp`-spawning parent in 0 of 10 attempts at 20, 50 and
+#   200 ms, because the parent exits first. That leftover is a leak of the arm's
+#   own processes, not a stalled gate, and the regression test asserts the kill
+#   only where a scan exists;
 # - the descendant list is taken once, before the first signal: a TERM can
 #   reparent a grandchild to PID 1, and a later tree traversal would miss it;
 # - a command that ignores SIGTERM is escalated to SIGKILL after
@@ -28,12 +37,7 @@
 #   `timeout --kill-after` — so the arm cannot outlive the deadline it was
 #   supposed to enforce;
 # - the deadline is recorded, so a command that traps TERM and exits 0 is
-#   reported as a timeout (124, as `timeout` reports it) instead of a success;
-# - whatever is left in the session when the command returns is killed too: a
-#   background child that outlives the command still holds this function's stdout,
-#   and the caller's command substitution then waits for it long after the bound
-#   (`output=$(bounded 1 sh -c "sleep 4 & echo banner")` took 4 s and reported
-#   success).
+#   reported as a timeout (124, as `timeout` reports it) instead of a success.
 
 if [[ -n ${HATAORI_BOUNDED_RUN_SH:-} ]]; then
     return 0
@@ -139,8 +143,12 @@ bounded() {
     local secs=$1
     shift
     local child status=0 watchdog marker timed_out=0 monitor=0 session=0
-    local targets=
+    local targets= stdout_file= stderr_file=
     marker=$(mktemp "${TMPDIR:-/tmp}/hataori-bounded.XXXXXX")
+    # Own copies of the output: a descendant holding the caller's pipe is what
+    # kept a substitution waiting past the bound.
+    stdout_file=$(mktemp "${TMPDIR:-/tmp}/hataori-bounded-out.XXXXXX")
+    stderr_file=$(mktemp "${TMPDIR:-/tmp}/hataori-bounded-err.XXXXXX")
     # A session is what survives setpgrp/setpgid and reparenting. `python3` starts
     # one with `os.setsid` in place of the command (`execvp`), so the pid we get is
     # the session leader; job control is the fallback, and it only reaches the
@@ -152,14 +160,14 @@ try:
     os.setsid()
 except OSError:
     pass
-os.execvp(sys.argv[1], sys.argv[1:])' "$@" &
+os.execvp(sys.argv[1], sys.argv[1:])' "$@" >"$stdout_file" 2>"$stderr_file" &
         child=$!
     else
         # Job control puts the command in its own process group; without it the
         # group would be this shell's, which the deadline cannot signal.
         case $- in *m*) monitor=1 ;; esac
         set -m
-        "$@" &
+        "$@" >"$stdout_file" 2>"$stderr_file" &
         child=$!
         ((monitor)) || set +m
     fi
@@ -216,7 +224,11 @@ os.execvp(sys.argv[1], sys.argv[1:])' "$@" &
         bounded_signal_pids KILL $targets
         wait "$watchdog" >/dev/null 2>&1 || true
     fi
-    rm -f "$marker"
+    # Replay what the command wrote. Its own descendants may still hold these
+    # files, which is harmless: nothing the caller reads is shared with them.
+    cat "$stdout_file" 2>/dev/null || true
+    cat "$stderr_file" >&2 2>/dev/null || true
+    rm -f "$marker" "$stdout_file" "$stderr_file"
     if [[ $timed_out == 1 && $status == 0 ]]; then
         status=124
     fi

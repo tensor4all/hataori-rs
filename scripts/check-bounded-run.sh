@@ -173,7 +173,14 @@ new_group=$(printf '%s' "$output" | tr -d '[:space:]')
 [[ $new_group =~ ^[0-9]+$ ]] || fail "the fixture did not report its descendant: '$output'"
 if kill -0 "$new_group" 2>/dev/null; then
     kill -KILL "$new_group" 2>/dev/null || true
-    fail "a descendant in a new process group outlived the bound ($new_group)"
+    # Killing it is only guaranteed where the session can be scanned; see the
+    # header of `bounded-run.sh`. Everywhere else the bound must still end on
+    # time, which the assertions above cover.
+    [[ ${HATAORI_BOUNDED_SESSION_SCAN:-none} != none ]] ||
+        printf '== no session scan here (%s): new-group stray left running\n' \
+            "${HATAORI_BOUNDED_SESSION_SCAN:-none}"
+    [[ ${HATAORI_BOUNDED_SESSION_SCAN:-none} == none ]] ||
+        fail "a descendant in a new process group outlived the bound ($new_group)"
 fi
 
 # P1, ninth reproduction: the same escape from inside the TERM handler, which no
@@ -201,7 +208,8 @@ printf '== new process group started inside the TERM handler: %ss, status %s\n' 
 escaped_group=$(cat "$pid_file")
 if kill -0 "$escaped_group" 2>/dev/null; then
     kill -KILL "$escaped_group" 2>/dev/null || true
-    fail "a new-group descendant started by the TERM handler survived ($escaped_group)"
+    [[ ${HATAORI_BOUNDED_SESSION_SCAN:-none} == none ]] ||
+        fail "a new-group descendant started by the TERM handler survived ($escaped_group)"
 fi
 
 # The session scan is chosen by what actually works, not by whether `ps` accepts
@@ -223,11 +231,13 @@ print(child.pid)
 elapsed=$((SECONDS - started))
 printf 'backend=%s elapsed=%ss status=%s\n' \
     "$HATAORI_BOUNDED_SESSION_SCAN" "$elapsed" "$status"
+# The bound and the caller's unblocking are platform independent; killing the
+# escaped group is only promised where a session scan exists.
 [[ $status == 0 ]] || exit 1
 ((elapsed <= 2 + bounded_grace)) || exit 1
 if kill -0 "$output" 2>/dev/null; then
     kill -KILL "$output" 2>/dev/null
-    exit 1
+    [[ ${HATAORI_BOUNDED_SESSION_SCAN:-none} == none ]] || exit 1
 fi
 FIXTURE
 shell=${BASH:-bash}
@@ -259,6 +269,15 @@ for scan in ps pgrep; do
     [[ $line == "backend=$scan "* ]] || fail "the forced $scan scan was not used: $line"
     printf '== session scan, forced %s: %s\n' "$scan" "$line"
 done
+
+# macOS as measured by the review: `ps -o sess=` reports 0 and `pgrep` has no
+# `-s`, so no session scan exists. The bound must still end and must not wait for
+# the escaped group.
+if ! line=$(HATAORI_BOUNDED_SESSION_SCAN=none "$shell" "$escape_fixture" "$root_dir" 2>&1); then
+    fail "without a session scan the bound did not end on time: $line"
+fi
+[[ $line == "backend=none "* ]] || fail "the forced no-session run did not take effect: $line"
+printf '== session scan, none (macOS): %s\n' "$line"
 
 if ! command -v pgrep >/dev/null 2>&1; then
     printf '== session scan, macOS-like ps: skipped (no pgrep)\n'
