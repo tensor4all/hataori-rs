@@ -259,8 +259,33 @@ if ! line=$("$shell" "$escape_fixture" "$root_dir" 2>&1); then
 fi
 printf '== session scan, auto: %s\n' "$line"
 
+# Does *this host* enumerate sessions with SCAN? macOS answers no to both (its
+# `ps -o sess=` prints 0 for every process and its `pgrep` rejects `-s`), so a
+# forced backend that cannot work is skipped rather than failed — the deadline
+# assertions in the fixtures above are what the platform must satisfy, and the
+# kill of an escaped group is only promised where a scan exists.
+session_scan_works() {
+    local scan=$1 sid
+    sid=$(python3 -c 'import os; print(os.getsid(0))' 2>/dev/null) || return 1
+    case $scan in
+        ps)
+            ps -A -o pid= -o sess= 2>/dev/null |
+                awk -v pid="$$" -v sid="$sid" '$1 == pid && $2 == sid { found = 1 } END { exit(found ? 0 : 1) }'
+            ;;
+        pgrep)
+            command -v pgrep >/dev/null 2>&1 || return 1
+            pgrep -s "$sid" 2>/dev/null | awk -v pid="$$" '$1 == pid { found = 1 } END { exit(found ? 0 : 1) }'
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 for scan in ps pgrep; do
-    if [[ $scan == pgrep ]] && ! command -v pgrep >/dev/null 2>&1; then
+    if ! session_scan_works "$scan"; then
+        printf '== session scan, forced %s: skipped (this host cannot enumerate sessions with %s)\n' \
+            "$scan" "$scan"
         continue
     fi
     if ! line=$(HATAORI_BOUNDED_SESSION_SCAN=$scan "$shell" "$escape_fixture" "$root_dir" 2>&1); then
@@ -294,8 +319,13 @@ printf "ps=%s backend=%s\n" "$(command -v ps)" "$(bounded_detect_session_scan)"'
     if [[ $probe_line != "ps=$macos_ps/ps backend="* ]]; then
         printf '== session scan, macOS-like ps: skipped (ps not shadowed here: %s)\n' "$probe_line"
     else
-        [[ $probe_line == *"backend=pgrep" ]] ||
-            fail "a ps that reports sess=0 did not fall through to pgrep: $probe_line"
+        # A ps that reports 0 must fall through to `pgrep -s`; on a host whose
+        # `pgrep` has no `-s` (macOS) neither scan exists, and `none` is the honest
+        # answer.
+        expected=pgrep
+        session_scan_works pgrep || expected=none
+        [[ $probe_line == *"backend=$expected" ]] ||
+            fail "a ps that reports sess=0 gave $probe_line, expected backend=$expected"
         printf '== session scan, macOS-like ps: %s\n' "$probe_line"
     fi
 fi
