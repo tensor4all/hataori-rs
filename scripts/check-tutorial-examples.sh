@@ -18,40 +18,10 @@ export BINDGEN_EXTRA_CLANG_ARGS=${BINDGEN_EXTRA_CLANG_ARGS:-"-I$(gcc -print-file
 
 source "$root_dir/scripts/mpi-launcher.sh"
 
-# The arms are bounded so a stuck launcher cannot hold the job to its timeout
-# (issue 41: a rank blocked in the collective). `setsid timeout` is the Linux
-# form; macOS has neither, so fall back to a `sh` watchdog instead of refusing to
-# run. The bound is the same in every form, and a form that cannot bound fails
-# closed below rather than running an arm without one.
-have_setsid=0
-command -v setsid >/dev/null 2>&1 && have_setsid=1
-have_timeout=0
-if command -v timeout >/dev/null 2>&1; then
-    # BSD `timeout` spells these differently; only GNU's flags are used.
-    timeout --signal=TERM --kill-after=1s 1s true >/dev/null 2>&1 && have_timeout=1
-fi
-
-# `bounded SECONDS COMMAND...`: run COMMAND, killing it after SECONDS. It is a
-# shell function, so a CPU prefix has to go *inside* it — `taskset -c 2,3 bounded
-# ...` asks taskset to exec a name that is not on PATH (exit 127).
-bounded() {
-    local secs=$1
-    shift
-    if ((have_setsid && have_timeout)); then
-        setsid timeout --signal=TERM --kill-after=5s "$secs" "$@"
-    elif ((have_timeout)); then
-        timeout --signal=TERM --kill-after=5s "$secs" "$@"
-    else
-        "$@" &
-        local child=$! guard status=0
-        (sleep "$secs" && kill -TERM "$child") >/dev/null 2>&1 &
-        guard=$!
-        wait "$child" || status=$?
-        kill -TERM "$guard" >/dev/null 2>&1 || true
-        wait "$guard" >/dev/null 2>&1 || true
-        return "$status"
-    fi
-}
+# Every arm is bounded so a stuck launcher cannot hold the job to its timeout
+# (issue 41: a rank blocked in the collective). `scripts/bounded-run.sh` owns the
+# deadline so the launcher probe and the arms share one implementation.
+source "$root_dir/scripts/bounded-run.sh"
 
 # Small enough to finish in seconds, large enough to reach `max_iter`.
 size_args=(--width 256 --height 256 --max-iter 200)

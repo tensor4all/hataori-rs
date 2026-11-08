@@ -16,14 +16,18 @@
 # min(CAP, available CPUs). Four ranks on a three-CPU runner is a
 # slot-allocation failure, not a test.
 
+# The probe below is bounded by `scripts/bounded-run.sh`, which also covers the
+# platforms without `setsid` — otherwise a supported launcher whose banner this
+# side does not recognize would be reported as unsupported on macOS.
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/bounded-run.sh"
+
 mpi_launcher_supports_oversubscribe() {
     local launcher=$1 banner
     banner=$("$launcher" --version 2>&1 || true)
     if grep -Eqi 'open[ -]?mpi|openrte|prrte|prte' <<<"$banner"; then
         return 0
     fi
-    setsid timeout --signal=TERM --kill-after=5s 30s \
-        "$launcher" --oversubscribe -n 1 true >/dev/null 2>&1
+    bounded 30s "$launcher" --oversubscribe -n 1 true >/dev/null 2>&1
 }
 
 # The CPUs this process may run on. `nproc` and `getconf _NPROCESSORS_ONLN`
