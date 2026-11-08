@@ -21,7 +21,13 @@
 # - where a session can be scanned (Linux: `ps -o sess=`), the command runs as the
 #   leader of its own session with `python3` and `os.setsid`, and the deadline
 #   signals every member of that session — `setpgrp` changes the group, not the
-#   session, so that escape is caught there too. Where no session scan exists
+#   session, so that escape is caught there too. Monitor mode is switched off
+#   around that launch and restored after it: with job control on, Bash makes the
+#   child a process-group leader, `setsid` then fails with EPERM, and the scan
+#   searched for a session id nobody had (measured: a `setpgrp` grandchild
+#   survived that way). The wrapper records the session id it ended with, so a
+#   session that was not created is reported and the group is signalled instead;
+#   it never claims a session it does not lead. Where no session scan exists
 #   (measured on macOS: `ps -A -o sess=` reports 0 for every process and `pgrep`
 #   rejects `-s`), the bound still ends on time and the caller never waits, but a
 #   descendant that changes its process group and is reparented before the deadline
@@ -156,6 +162,17 @@ bounded_signal_session() {
     bounded_signal_pids "$signal" $pids
 }
 
+# Signals the session the command leads, but only when it leads one. The wrapper
+# records the session id it ended with; a rejected `setsid` leaves this shell's
+# session, and a scan for the child's pid then finds nothing (measured: a
+# `setpgrp` grandchild survived a 2 s bound when the caller had job control on).
+bounded_signal_child_session() {
+    local signal=$1 child=$2 file=$3 sid
+    sid=$(cat "$file" 2>/dev/null) || return 0
+    [[ $sid == "$child" ]] || return 0
+    bounded_signal_session "$signal" "$sid"
+}
+
 # Replays spooled FILE on FD without ever blocking the caller. The replay writes
 # on the caller's pipe, so a caller that stops reading parks it once the pipe is
 # full — a synchronous `cat` held `bounded 1` for the reader's whole absence
@@ -195,29 +212,48 @@ bounded() {
     local secs=$1
     shift
     local child status=0 watchdog marker timed_out=0 monitor=0 session=0
-    local targets= stdout_file= stderr_file= notice_file= notices=
+    local targets= stdout_file= stderr_file= notice_file= notices= session_file=
     marker=$(mktemp "${TMPDIR:-/tmp}/hataori-bounded.XXXXXX")
     # Own copies of the output: a descendant holding the caller's pipe is what
     # kept a substitution waiting past the bound.
     stdout_file=$(mktemp "${TMPDIR:-/tmp}/hataori-bounded-out.XXXXXX")
     stderr_file=$(mktemp "${TMPDIR:-/tmp}/hataori-bounded-err.XXXXXX")
+    session_file=$(mktemp "${TMPDIR:-/tmp}/hataori-bounded-sid.XXXXXX")
     # A session is what survives setpgrp/setpgid and reparenting. `python3` starts
     # one with `os.setsid` in place of the command (`execvp`), so the pid we get is
     # the session leader; job control is the fallback, and it only reaches the
     # group.
+    case $- in *m*) monitor=1 ;; esac
     if [[ ${HATAORI_BOUNDED_SESSION_SCAN:-none} != none ]] && command -v python3 >/dev/null 2>&1; then
+        # Monitor mode is switched off for this launch and restored after it: with
+        # job control on, Bash makes the background child a process-group leader,
+        # `setsid()` then fails with EPERM, and the pid is a group leader of this
+        # shell's session rather than the leader of its own.
+        ((monitor)) && set +m
         session=1
         python3 -c 'import os, sys
+# The failure is not swallowed: a session that was not created is reported, and
+# the process group is taken instead so the deadline still has something to
+# signal.
 try:
     os.setsid()
+except OSError as error:
+    sys.stderr.write("bounded: no session here (%s); signalling the process group\n" % error)
+    try:
+        os.setpgid(0, 0)
+    except OSError:
+        pass
+try:
+    with open(sys.argv[1], "w") as handle:
+        handle.write(str(os.getsid(0)))
 except OSError:
     pass
-os.execvp(sys.argv[1], sys.argv[1:])' "$@" >"$stdout_file" 2>"$stderr_file" &
+os.execvp(sys.argv[2], sys.argv[2:])' "$session_file" "$@" >"$stdout_file" 2>"$stderr_file" &
         child=$!
+        ((monitor)) && set -m
     else
         # Job control puts the command in its own process group; without it the
         # group would be this shell's, which the deadline cannot signal.
-        case $- in *m*) monitor=1 ;; esac
         set -m
         "$@" >"$stdout_file" 2>"$stderr_file" &
         child=$!
@@ -230,7 +266,7 @@ os.execvp(sys.argv[1], sys.argv[1:])' "$@" >"$stdout_file" 2>"$stderr_file" &
         echo fired >"$marker"
         targets=$(bounded_tree_pids "$child")
         if ((session)); then
-            bounded_signal_session TERM "$child"
+            bounded_signal_child_session TERM "$child" "$session_file"
         fi
         bounded_signal_group TERM "$child"
         # shellcheck disable=SC2086
@@ -238,7 +274,7 @@ os.execvp(sys.argv[1], sys.argv[1:])' "$@" >"$stdout_file" 2>"$stderr_file" &
         sleep "$bounded_grace"
         # Re-enumerate: a TERM handler may have started a new group since.
         if ((session)); then
-            bounded_signal_session KILL "$child"
+            bounded_signal_child_session KILL "$child" "$session_file"
         fi
         bounded_signal_group KILL "$child"
         # shellcheck disable=SC2086
@@ -256,7 +292,7 @@ os.execvp(sys.argv[1], sys.argv[1:])' "$@" >"$stdout_file" 2>"$stderr_file" &
         # The escalation cannot have run after its own KILL, but a member of the
         # session can still be starting, so sweep once more.
         if ((session)); then
-            bounded_signal_session KILL "$child"
+            bounded_signal_child_session KILL "$child" "$session_file"
         fi
         bounded_signal_group KILL "$child"
         targets=$(bounded_tree_pids "$child")
@@ -267,7 +303,7 @@ os.execvp(sys.argv[1], sys.argv[1:])' "$@" >"$stdout_file" 2>"$stderr_file" &
         # still hold this function's stdout, which would keep the caller's command
         # substitution open past the bound, so it is killed rather than inherited.
         if ((session)); then
-            bounded_signal_session KILL "$child"
+            bounded_signal_child_session KILL "$child" "$session_file"
         fi
         bounded_signal_group KILL "$child"
         # Take the watchdog's `sleep` with it rather than leaving it to expire.
@@ -282,7 +318,7 @@ os.execvp(sys.argv[1], sys.argv[1:])' "$@" >"$stdout_file" 2>"$stderr_file" &
     notices+=$bounded_replay_cut
     bounded_replay_stream "$stderr_file" 2 stderr
     notices+=$bounded_replay_cut
-    rm -f "$marker" "$stdout_file" "$stderr_file"
+    rm -f "$marker" "$stdout_file" "$stderr_file" "$session_file"
     if [[ -n $notices ]]; then
         notice_file=$(mktemp "${TMPDIR:-/tmp}/hataori-bounded-notice.XXXXXX")
         printf '%s' "$notices" >"$notice_file"

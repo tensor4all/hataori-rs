@@ -415,6 +415,11 @@ escape_fixture=$tmp_dir/escape-fixture.sh
 cat >"$escape_fixture" <<'FIXTURE'
 set -u
 source "$1/scripts/bounded-run.sh"
+# `monitor`: the caller runs with job control on. Bash then makes every
+# background child a process-group leader, so the session wrapper's `setsid`
+# fails with EPERM unless `bounded` switches monitor mode off around that launch.
+[[ ${2:-} == monitor ]] && set -m
+before=$-
 started=$SECONDS
 status=0
 output=$(bounded 2 python3 -c '
@@ -423,12 +428,19 @@ child = subprocess.Popen(["sleep", "30"], preexec_fn=os.setpgrp)
 print(child.pid)
 ') || status=$?
 elapsed=$((SECONDS - started))
-printf 'backend=%s elapsed=%ss status=%s\n' \
-    "$HATAORI_BOUNDED_SESSION_SCAN" "$elapsed" "$status"
+printf 'backend=%s jobcontrol=%s elapsed=%ss status=%s\n' \
+    "${HATAORI_BOUNDED_SESSION_SCAN:-none}" "$([[ $- == *m* ]] && echo on || echo off)" \
+    "$elapsed" "$status"
 # The bound and the caller's unblocking are platform independent; killing the
 # escaped group is only promised where a session scan exists.
 [[ $status == 0 ]] || exit 1
 ((elapsed <= 2 + bounded_grace)) || exit 1
+# Monitor mode is the caller's setting: restored to what it was, either way.
+if [[ $before == *m* ]]; then
+    [[ $- == *m* ]] || exit 1
+else
+    [[ $- != *m* ]] || exit 1
+fi
 if kill -0 "$output" 2>/dev/null; then
     kill -KILL "$output" 2>/dev/null
     [[ ${HATAORI_BOUNDED_SESSION_SCAN:-none} == none ]] || exit 1
@@ -452,6 +464,15 @@ if ! line=$("$shell" "$escape_fixture" "$root_dir" 2>&1); then
     fail "the auto-selected session scan did not clean up the escape: $line"
 fi
 printf '== session scan, auto: %s\n' "$line"
+
+# Same escape with the caller's job control on: `set -m` makes Bash a
+# process-group leader for the background child, `setsid` then fails with EPERM,
+# and a swallowed failure left `session=1` scanning for a session id nobody had —
+# measured at 5ffaad1 as a surviving `setpgrp` grandchild (escaped_alive=yes).
+if ! line=$("$shell" "$escape_fixture" "$root_dir" monitor 2>&1); then
+    fail "with the caller's job control on the session scan did not clean up the escape: $line"
+fi
+printf '== session scan, auto, caller job control on: %s\n' "$line"
 
 # Does *this host* enumerate sessions with SCAN? macOS answers no to both (its
 # `ps -o sess=` prints 0 for every process and its `pgrep` rejects `-s`), so a
@@ -487,6 +508,12 @@ for scan in ps pgrep; do
     fi
     [[ $line == "backend=$scan "* ]] || fail "the forced $scan scan was not used: $line"
     printf '== session scan, forced %s: %s\n' "$scan" "$line"
+    if ! line=$(HATAORI_BOUNDED_SESSION_SCAN=$scan "$shell" "$escape_fixture" "$root_dir" monitor 2>&1); then
+        fail "the forced $scan scan with job control on did not clean up the escape: $line"
+    fi
+    [[ $line == "backend=$scan jobcontrol=on "* ]] ||
+        fail "the forced $scan run with job control on did not enable it: $line"
+    printf '== session scan, forced %s, caller job control on: %s\n' "$scan" "$line"
 done
 
 # macOS as measured by the review: `ps -o sess=` reports 0 and `pgrep` has no
