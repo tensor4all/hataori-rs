@@ -18,14 +18,38 @@ export BINDGEN_EXTRA_CLANG_ARGS=${BINDGEN_EXTRA_CLANG_ARGS:-"-I$(gcc -print-file
 
 source "$root_dir/scripts/mpi-launcher.sh"
 
-# The arms are bounded with `setsid timeout`, as the sibling acceptance scripts
-# already are, so a stuck launcher cannot hold the job to its timeout.
-for tool in setsid timeout; do
-    command -v "$tool" >/dev/null 2>&1 || {
-        printf 'check-tutorial-examples: %s is required (util-linux / GNU coreutils)\n' "$tool" >&2
-        exit 2
-    }
-done
+# The arms are bounded so a stuck launcher cannot hold the job to its timeout
+# (issue 41: a rank blocked in the collective). `setsid timeout` is the Linux
+# form; macOS has neither, so fall back to a `sh` watchdog instead of refusing to
+# run. The bound is the same in every form, and a form that cannot bound fails
+# closed below rather than running an arm without one.
+have_setsid=0
+command -v setsid >/dev/null 2>&1 && have_setsid=1
+have_timeout=0
+if command -v timeout >/dev/null 2>&1; then
+    # BSD `timeout` spells these differently; only GNU's flags are used.
+    timeout --signal=TERM --kill-after=1s 1s true >/dev/null 2>&1 && have_timeout=1
+fi
+
+# `bounded SECONDS COMMAND...`: run COMMAND, killing it after SECONDS.
+bounded() {
+    local secs=$1
+    shift
+    if ((have_setsid && have_timeout)); then
+        setsid timeout --signal=TERM --kill-after=5s "$secs" "$@"
+    elif ((have_timeout)); then
+        timeout --signal=TERM --kill-after=5s "$secs" "$@"
+    else
+        "$@" &
+        local child=$! guard status=0
+        (sleep "$secs" && kill -TERM "$child") >/dev/null 2>&1 &
+        guard=$!
+        wait "$child" || status=$?
+        kill -TERM "$guard" >/dev/null 2>&1 || true
+        wait "$guard" >/dev/null 2>&1 || true
+        return "$status"
+    fi
+}
 
 # Small enough to finish in seconds, large enough to reach `max_iter`.
 size_args=(--width 256 --height 256 --max-iter 200)
@@ -73,7 +97,7 @@ run_direct() {
     rm -f "$work_dir/$example.png"
     echo "== run: $example $*"
     (cd "$work_dir" && ${cpu_prefix[@]+"${cpu_prefix[@]}"} \
-        setsid timeout --signal=TERM --kill-after=5s "$arm_timeout" \
+        bounded "$arm_timeout" \
         "$root_dir/target/release/examples/$example" "${size_args[@]}" "$@")
     [[ -f $work_dir/$example.png ]]
 }
@@ -84,31 +108,43 @@ run_mpi() {
     rm -f "$work_dir/$example.png"
     echo "== run: $example (mpiexec -n $ranks) $*"
     (cd "$work_dir" && ${cpu_prefix[@]+"${cpu_prefix[@]}"} \
-        setsid timeout --signal=TERM --kill-after=5s "$arm_timeout" \
+        bounded "$arm_timeout" \
         "${launcher[@]}" -n "$ranks" \
         "$root_dir/target/release/examples/$example" "${size_args[@]}" "$@")
     [[ -f $work_dir/$example.png ]]
 }
 
+# `run_mpi_fails_fast EXPECTED-DIAGNOSTIC EXAMPLE [ARGS...]`: the run must fail
+# quickly, with no image, *and* say why. A nonzero exit alone is not evidence of
+# the validation path — a panic or a missing launcher exits nonzero too.
 run_mpi_fails_fast() {
-    local example=$1
-    shift
+    local expect=$1 example=$2
+    shift 2
     # The image is written next to the previous run's, so a stale file would be
     # read as this run's output. The failing run also gets an explicit
     # `--output` of its own, so a run that does write is visible.
-    rm -f "$work_dir/$example.png"
+    local log=$work_dir/$example-fail.log
+    rm -f "$work_dir/$example.png" "$log"
     echo "== expect a bounded failure: $example (mpiexec -n $ranks) $*"
-    local started=$SECONDS
+    local started=$SECONDS rc=0
     if (cd "$work_dir" && ${cpu_prefix[@]+"${cpu_prefix[@]}"} \
-        setsid timeout --signal=TERM --kill-after=5s "$abort_timeout" \
+        bounded "$abort_timeout" \
         "${launcher[@]}" -n "$ranks" \
         "$root_dir/target/release/examples/$example" "${size_args[@]}" \
-        --output "$example.png" "$@"); then
+        --output "$example.png" "$@" >"$log" 2>&1); then
         echo "check-tutorial-examples: $example $* was expected to fail" >&2
+        sed -n '1,20p' "$log" >&2
         return 1
+    else
+        rc=$?
     fi
     if ((SECONDS - started > 45)); then
         echo "check-tutorial-examples: $example $* took $((SECONDS - started))s; the abort path is not bounded" >&2
+        return 1
+    fi
+    if ! grep -qF -- "$expect" "$log"; then
+        echo "check-tutorial-examples: $example $* exited $rc without '$expect' (a crash is not the validation path)" >&2
+        sed -n '1,20p' "$log" >&2
         return 1
     fi
     [[ ! -f $work_dir/$example.png ]] \
@@ -127,7 +163,11 @@ cpus = sorted(os.sched_getaffinity(0))
 if len(cpus) < want:
     sys.exit(2)
 shifted = [cpu for cpu in cpus if cpu != 0]
-print(",".join(str(cpu) for cpu in (shifted if len(shifted) >= want else cpus)[-want:]))
+if len(shifted) < want:
+    # Falling back to the full mask would keep cpu 0 in it, and the hardcoded
+    # `0..workers` set this arm exists to catch would pass. Skip instead.
+    sys.exit(3)
+print(",".join(str(cpu) for cpu in shifted[-want:]))
 PY
 }
 
@@ -147,7 +187,8 @@ run_mpi mpi_mandelbrot_hybrid --workers 2 --output mpi_mandelbrot_hybrid.png
 # #41: an inadmissible worker request must abort the job instead of leaving the other
 # rank in the collective until the job timeout. The value also overflows a naive
 # `size * workers * factor` product.
-run_mpi_fails_fast mpi_mandelbrot_hybrid --workers 288230376151711744
+run_mpi_fails_fast "workers requested, but this process may only use" \
+    mpi_mandelbrot_hybrid --workers 288230376151711744
 
 # Regression for issue 41: a hardcoded `0..workers` CPU set only works while the
 # process may run on cpu 0, so both managed-pool arms also run under a mask that
@@ -162,7 +203,8 @@ else
     cpu_prefix=(taskset -c "$mask")
     run_direct rayon_mandelbrot --threads 2 --output rayon_mandelbrot.png
     run_mpi mpi_mandelbrot_hybrid --workers 2 --output mpi_mandelbrot_hybrid.png
-    run_mpi_fails_fast mpi_mandelbrot_hybrid --workers 999
+    run_mpi_fails_fast "workers requested, but this process may only use" \
+        mpi_mandelbrot_hybrid --workers 999
     cpu_prefix=()
 fi
 
