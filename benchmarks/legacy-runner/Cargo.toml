@@ -17,3 +17,9 @@ hataori = { git = "https://github.com/tensor4all/hataori-rs.git", rev = "34cb1b1
 mpi = { version = "=0.8.1", default-features = false, optional = true }
 rayon = { version = "1.10", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
+
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0
