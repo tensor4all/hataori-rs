@@ -4,8 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Daily canary: no Cargo.lock is committed, so main can turn red without a
-  # commit when the registry resolves a newer dependency train (issue 35).
+  # Daily canary: `core` builds against the committed Cargo.lock, so registry
+  # drift only shows up in the unlocked `deps-fresh` lane. The schedule runs
+  # that lane once a day instead of waiting for a commit (issue 35).
   schedule:
     - cron: "0 3 * * *"
 
@@ -56,6 +57,38 @@ jobs:
         run: scripts/check-phase-d-migration.sh
       - name: Check Phase E algorithms and facade correctness
         run: scripts/check-phase-e-algorithms.sh
+
+  deps-fresh:
+    # Unlocked drift-detection lane, deliberately separate from `core`: it
+    # resolves the newest compatible dependency set and tests it. It is not
+    # continue-on-error, because a red result here is information — the
+    # dependency train moved and the committed lock is stale.
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install MPI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libclang-dev libopenmpi-dev openmpi-bin
+      - name: Resolve the newest compatible dependency set
+        run: cargo update
+      - name: Test the freshly resolved dependency set
+        run: |
+          cargo test --no-default-features
+          cargo test --no-default-features --features rayon
+          cargo test --no-default-features --features mpi
+          cargo test --no-default-features --features mpi,rayon
+
+      - name: Check the feature boundaries still fail to compile
+        run: scripts/check-compile-boundaries.sh
+
+      - name: Install the MSRV toolchain the adapter script checks
+        run: rustup toolchain install 1.85.0 --profile minimal
+
+      - name: Test the freshly resolved tenferro adapter tree
+        run: scripts/check-tenferro.sh
 
   tenferro-adapter:
     runs-on: ubuntu-latest
