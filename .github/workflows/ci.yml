@@ -64,7 +64,7 @@ jobs:
     # continue-on-error, because a red result here is information — the
     # dependency train moved and the committed lock is stale.
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -83,6 +83,9 @@ jobs:
 
       - name: Check the feature boundaries still fail to compile
         run: scripts/check-compile-boundaries.sh
+
+      - name: Test the freshly resolved tenferro adapter tree
+        run: scripts/check-tenferro.sh
 
   tenferro-adapter:
     runs-on: ubuntu-latest
