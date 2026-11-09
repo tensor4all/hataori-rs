@@ -84,6 +84,9 @@ jobs:
       - name: Check the feature boundaries still fail to compile
         run: scripts/check-compile-boundaries.sh
 
+      - name: Install the MSRV toolchain the adapter script checks
+        run: rustup toolchain install 1.85.0 --profile minimal
+
       - name: Test the freshly resolved tenferro adapter tree
         run: scripts/check-tenferro.sh
 
