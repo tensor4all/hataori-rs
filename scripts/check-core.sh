@@ -16,6 +16,11 @@ root_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root_dir"
 export BINDGEN_EXTRA_CLANG_ARGS=${BINDGEN_EXTRA_CLANG_ARGS:-"-I$(gcc -print-file-name=include)"}
 
+# The committed Cargo.lock is the merge gate for this lane. Fail before any
+# unlocked cargo run below can resolve a newer dependency set and silently
+# rewrite it; `deps-fresh` is the one lane allowed to move the lock.
+cargo metadata --locked --format-version 1 >/dev/null
+
 # The `tenferro` feature (Mandelbrot examples only) needs Rust >= 1.96 and is
 # therefore outside the 1.85 matrix below; it is built and run separately.
 scripts/check-tutorial-examples.sh "$mpi_rt_lib"
@@ -30,10 +35,10 @@ for features in '' rayon mpi mpi,rayon rsmpi-rt rsmpi-rt,rayon; do
     else
         args=(--no-default-features --features "$features")
     fi
-    cargo test "${args[@]}"
-    cargo clippy --all-targets "${args[@]}" -- -D warnings
-    cargo doc --no-deps "${args[@]}"
-    cargo +1.85.0 check "${args[@]}"
+    cargo test --locked "${args[@]}"
+    cargo clippy --all-targets --locked "${args[@]}" -- -D warnings
+    cargo doc --no-deps --locked "${args[@]}"
+    cargo +1.85.0 check --locked "${args[@]}"
 done
 
 for features in '' rayon; do
