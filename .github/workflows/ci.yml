@@ -81,6 +81,9 @@ jobs:
           cargo test --no-default-features --features mpi
           cargo test --no-default-features --features mpi,rayon
 
+      - name: Check the feature boundaries still fail to compile
+        run: scripts/check-compile-boundaries.sh
+
   tenferro-adapter:
     runs-on: ubuntu-latest
     timeout-minutes: 25

@@ -60,7 +60,9 @@ fi
 grep -q 'mutually exclusive' /tmp/hataori-both-features.log
 
 scripts/check-mpi-call-boundaries.py
-scripts/check-compile-boundaries.sh
+# The compile-boundary probes build throwaway crates without a lockfile, so they
+# resolve fresh dependencies by construction; they run in the `deps-fresh` lane
+# instead, keeping this lane lock-constrained.
 scripts/check-rsmpi-rt.sh "$mpi_rt_lib" "$fixture_commit"
 scripts/check-hybrid.sh "$mpi_rt_lib"
 scripts/check-placement.sh "$mpi_rt_lib"
