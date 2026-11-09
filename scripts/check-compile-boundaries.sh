@@ -42,7 +42,7 @@ fn main() {
 RS
 cargo check --quiet --manifest-path "$serial/Cargo.toml"
 
-rayon_case=$(make_crate rayon_boundary '"rayon"' 'rayon = "1.10"')
+rayon_case=$(make_crate rayon_boundary '"rayon"' 'rayon = "=1.12.0"')
 cat >"$rayon_case/src/main.rs" <<'RS'
 use std::sync::Arc;
 fn main() {
@@ -59,7 +59,7 @@ RS
 cargo check --quiet --manifest-path "$rayon_case/Cargo.toml"
 
 mpi_case=$(make_crate mpi_boundary '"mpi"' 'mpi-upstream = { package = "mpi", version = "=0.8.1", default-features = false }
-serde = { version = "1", features = ["derive"] }')
+serde = { version = "=1.0.229", features = ["derive"] }')
 cat >"$mpi_case/src/main.rs" <<'RS'
 use mpi_upstream::traits::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -93,7 +93,7 @@ RS
 cargo check --quiet --manifest-path "$mpi_case/Cargo.toml"
 
 hybrid=$(make_crate hybrid_boundary '"mpi", "rayon"' 'mpi-upstream = { package = "mpi", version = "=0.8.1", default-features = false }
-rayon = "1.10"')
+rayon = "=1.12.0"')
 cat >"$hybrid/src/main.rs" <<'RS'
 use mpi_upstream::traits::*;
 use std::{num::NonZeroUsize, sync::{Arc, atomic::{AtomicUsize, Ordering}}};
