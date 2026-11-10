@@ -10,7 +10,9 @@ import sys
 MACRO = "mpi_call!"
 FORBIDDEN = re.compile(
     r"\b(?:comm|world)\s*\.\s*(?:rank|size|duplicate|abort|all_reduce_into|barrier)\s*\("
-    r"|\.\s*(?:send_with_tag|receive_vec_with_tag|broadcast_into|immediate_probe_with_tag)\s*\("
+    r"|\.\s*(?:send_with_tag|receive_vec_with_tag|receive_into_with_tag|probe_with_tag"
+    r"|broadcast_into|immediate_probe_with_tag|matched_probe_with_tag)\s*\("
+    r"|\bstatus\s*\.\s*count\s*\("
     r"|\bthreading_support\s*\("
     r"|\bffi\s*::\s*MPI_"
 )
@@ -102,6 +104,11 @@ def self_test() -> None:
     assert not violations('fn f(){ mpi_call!(comm.send_with_tag(b"(", 1)); }')
     assert violations("fn f(){ comm.rank(); }")
     assert violations("fn f(){ comm.process_at_rank(1).send_with_tag(&[1], 2); }")
+    assert violations("fn f(){ comm.process_at_rank(1).receive_into_with_tag(&mut v, 3); }")
+    assert violations("fn f(){ comm.process_at_rank(1).probe_with_tag(2); }")
+    assert violations("fn f(){ status.count(T::equivalent_datatype()); }")
+    assert not violations("fn f(){ mpi_call!(status.count(T::equivalent_datatype())); }")
+    assert not violations("fn f(){ let n = values.iter().count(); }")
     assert not violations("// comm.rank()\nfn f(){}")
     try:
         remove_wrapped_calls("mpi_call!{comm.rank()}")
@@ -117,7 +124,7 @@ def main() -> int:
         return 0
     root = pathlib.Path(__file__).resolve().parents[1]
     found = []
-    for path in sorted((root / "src").glob("*.rs")):
+    for path in sorted((root / "src").rglob("*.rs")):
         if path.name == "mpi_check.rs":
             continue
         for line, token in violations(path.read_text(encoding="utf-8")):
