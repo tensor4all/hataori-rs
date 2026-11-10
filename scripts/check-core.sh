@@ -29,7 +29,7 @@ scripts/check-tutorial-examples.sh "$mpi_rt_lib"
 scripts/check-bounded-run.sh
 
 cargo fmt --check
-for features in '' rayon mpi mpi,rayon rsmpi-rt rsmpi-rt,rayon; do
+for features in '' rayon mpi mpi,rayon mpi,bitcode rsmpi-rt rsmpi-rt,rayon; do
     if [[ -z $features ]]; then
         args=(--no-default-features)
     else

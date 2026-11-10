@@ -41,3 +41,20 @@ adapter, which likewise declares `rust-version = "1.96"`, runs one lane per
 caller-held tenferro engine for `map_in_lanes` and `pmap_lanes`, so Hataori
 schedules items across the caller's engines; see the
 [adapter design](../design/tenferro-adapter.md).
+
+## The `bitcode` feature (evaluation)
+
+`bitcode` is an alternative encoder for structured MPI payloads. It is opt-in
+and does not change the API: the default codec stays bincode, with identical
+wire bytes. Enabling it requires one of the MPI features, because the codec is
+used by the framed MPI wire:
+
+```sh
+cargo test --no-default-features --features mpi,bitcode
+```
+
+`bitcode`'s serde format is not self-describing and does not support every serde
+type (for example `deserialize_any`), so it is an evaluation backend, not a
+general-purpose replacement. Selecting it on the MPI path is not part of this
+feature; the measurement harness is
+`cargo test --release --no-default-features --features mpi,bitcode --lib payload_codec_measurement -- --ignored --nocapture`.

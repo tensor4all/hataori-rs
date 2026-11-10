@@ -27,7 +27,8 @@ on the current runner the sweep is `n=1,2,4`.
 |---|---|
 | Dependency-free default | `check-core.sh`: default tests and `cargo tree` exclusion |
 | Rayon without MPI/serde/bincode | `check-core.sh`: Rayon tests/tree, local borrowed and global-pool tests |
-| Upstream MPI and hybrid | six-feature loop plus `check-hybrid.sh`, `check-placement.sh`, `check-faults.sh` |
+| Bitcode payload codec | `check-core.sh`: `mpi,bitcode` test/lint/docs/MSRV row; `bitcode` without an MPI feature is an intended compile failure |
+| Upstream MPI and hybrid | seven-row feature loop plus `check-hybrid.sh`, `check-placement.sh`, `check-faults.sh` |
 | Runtime MPI and hybrid | same scripts plus `check-rsmpi-rt.sh` poisoned build/tree boundary |
 | Backends mutually exclusive | intended compile failure checked by `check-core.sh` and downstream fixture |
 | Rust 1.85 | `cargo +1.85.0 check` for every valid feature set |

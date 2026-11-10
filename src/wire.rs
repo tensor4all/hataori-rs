@@ -1,5 +1,5 @@
+use crate::codec;
 use crate::map::truncate_message;
-use bincode::config::{self, Configuration};
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt;
 #[cfg(all(test, not(feature = "rayon")))]
@@ -218,40 +218,35 @@ fn validate_payload_len(payload_len: u64) -> Result<(), WireError> {
         .ok_or(WireError::PayloadTooLarge { bytes: payload_len })
 }
 
-fn wire_config() -> Configuration<config::LittleEndian, config::Fixint> {
-    config::standard()
-        .with_fixed_int_encoding()
-        .with_little_endian()
-}
-
-pub(crate) fn encode_payload<T: Serialize>(value: &T) -> Result<Vec<u8>, WireError> {
-    #[cfg(all(test, not(feature = "rayon")))]
-    ENCODE_CALLS.fetch_add(1, Ordering::SeqCst);
-    let bytes =
-        bincode::serde::encode_to_vec(value, wire_config()).map_err(|error| WireError::Encode {
-            detail: truncate_message(error.to_string()),
-        })?;
+/// Encodes a payload with `C`, then checks the protocol byte cap.
+pub(crate) fn encode_payload_with<T: Serialize, C: codec::PayloadCodec>(
+    value: &T,
+) -> Result<Vec<u8>, WireError> {
+    let bytes = C::encode(value)?;
     validate_payload_len(bytes.len() as u64)?;
     Ok(bytes)
 }
 
+/// Decodes a payload with `C` after checking the protocol byte cap.
+pub(crate) fn decode_payload_with<T: DeserializeOwned, C: codec::PayloadCodec>(
+    bytes: &[u8],
+) -> Result<T, WireError> {
+    validate_payload_len(bytes.len() as u64)?;
+    C::decode(bytes)
+}
+
+/// Encodes a payload with the default codec.
+pub(crate) fn encode_payload<T: Serialize>(value: &T) -> Result<Vec<u8>, WireError> {
+    #[cfg(all(test, not(feature = "rayon")))]
+    ENCODE_CALLS.fetch_add(1, Ordering::SeqCst);
+    encode_payload_with::<T, codec::Bincode>(value)
+}
+
+/// Decodes a payload with the default codec.
 pub(crate) fn decode_payload<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, WireError> {
     #[cfg(all(test, not(feature = "rayon")))]
     DECODE_CALLS.fetch_add(1, Ordering::SeqCst);
-    validate_payload_len(bytes.len() as u64)?;
-    let (value, used) =
-        bincode::serde::decode_from_slice(bytes, wire_config()).map_err(|error| {
-            WireError::Decode {
-                detail: truncate_message(error.to_string()),
-            }
-        })?;
-    if used != bytes.len() {
-        return Err(WireError::TrailingBytes {
-            used,
-            total: bytes.len(),
-        });
-    }
-    Ok(value)
+    decode_payload_with::<T, codec::Bincode>(bytes)
 }
 
 pub(crate) fn checked_mpi_count(value: u64) -> Result<i32, WireError> {
