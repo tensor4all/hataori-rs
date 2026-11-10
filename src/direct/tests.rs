@@ -303,6 +303,11 @@ fn direct_payload_roundtrip() {
                 ),
                 "an undrainable frame was not reported as a count mismatch"
             );
+            // Drain the still-pending data message, or a blocking sender never returns.
+            let mut leftover = [0.0_f64; 1];
+            mpi_call!(world
+                .process_at_rank(0)
+                .receive_into_with_tag(&mut leftover[..], DATA_TAG));
             println!(
                 "rank 1/2 reported the undrainable f64/2-as-f64/1 frame as DirectCountMismatch"
             );
