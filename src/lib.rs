@@ -1,5 +1,7 @@
 //! Hataori: local data parallelism and an optional long-lived distributed runtime.
 
+#[cfg(any(feature = "mpi", feature = "rsmpi-rt"))]
+mod codec;
 mod domain;
 mod lanes;
 #[cfg(feature = "rayon")]
@@ -66,6 +68,9 @@ pub use pmap::{PmapError, PmapErrorKind};
 
 #[cfg(all(feature = "mpi", feature = "rsmpi-rt"))]
 compile_error!("hataori: features `mpi` and `rsmpi-rt` are mutually exclusive");
+
+#[cfg(all(feature = "bitcode", not(any(feature = "mpi", feature = "rsmpi-rt"))))]
+compile_error!("hataori: the `bitcode` payload codec needs `mpi` or `rsmpi-rt`");
 
 #[cfg(all(feature = "mpi", not(feature = "rsmpi-rt")))]
 #[allow(unused_imports)]

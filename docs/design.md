@@ -38,6 +38,7 @@ The default build is standard-library-only. P0 keeps one crate with optional fea
 | `rayon` | `rayon` |
 | `mpi` | upstream `mpi` (rsmpi), `serde`, and `bincode` |
 | `rsmpi-rt` | [`tensor4all/rsmpi-rt`](https://github.com/tensor4all/rsmpi-rt) as package `mpi`, plus `serde` and `bincode` |
+| `bitcode` | `bitcode` as an alternative payload codec; requires `mpi` or `rsmpi-rt` |
 | Linux managed affinity | `libc` |
 | `tenferro` | `tenferro-tensor` (pinned git revision), used only by the Mandelbrot examples under `examples/`; requires Rust >= 1.96 because the pinned tenferro-rs workspace sets `rust-version = "1.96"`, so it is excluded from the Rust 1.85 feature matrix |
 
@@ -377,13 +378,15 @@ P0 targets `MPI_THREAD_FUNNELED` behavior.
 
 ## 10. Generic wire and locality
 
-Cross-rank values use one fixed bincode 2 serde configuration:
+Cross-rank values are encoded by a pluggable payload codec (`src/codec.rs`, trait `PayloadCodec`); the frame header and framing are codec independent. The default codec is bincode 2 serde with fixed-size little-endian integers:
 
 ```rust
 bincode::config::standard()
     .with_fixed_int_encoding()
     .with_little_endian()
 ```
+
+The `bitcode` feature adds a second backend for evaluation; it is not part of the default build, and the MPI path still selects the default codec. A codec is chosen at compile time because both ends of an exchange must agree on it.
 
 Each message uses a fixed header tag followed, when nonempty, by one payload tag from the same source on the private communicator. The fixed-width header contains protocol version, message kind, batch ID, item count, status, and `u64` payload length. Status is a checked scheduler tag; the wire codec treats payload bytes as opaque, while each scheduler/transport message kind defines its payload schema in the task that consumes it. Capacity one means a rank never has two payloads outstanding. Receivers first match the header, then receive exactly its announced payload from that source; no wildcard payload receive is allowed.
 
@@ -545,7 +548,7 @@ Backend-specific errors do not enter the core error enum.
 - Local non-serialized use is not forced to implement serde.
 - No communicator or backend receives an unsafe thread-safety wrapper.
 - Core's Rust 1.85 feature matrix (default, `rayon`, `mpi`, `rsmpi-rt`, and their hybrids) builds without tenferro or tensor4all in its dependency tree; only the opt-in `tenferro` example feature adds `tenferro-tensor`.
-- Default and Rayon-only builds contain no MPI, serde, or bincode dependency.
+- Default and Rayon-only builds contain no MPI, serde, bincode, or bitcode dependency.
 - `mpi` and pinned `rsmpi-rt` revision `6db6a2d6f96115b17c9a925e53ce719797c15dbb` each build the same Hataori MPI API; enabling both fails at compile time.
 - An `rsmpi-rt` build succeeds without MPI headers, a C compiler, or libclang, then passes a multi-rank smoke test with `MPI_RT_LIB` set.
 - Hataori can use a caller-supplied communicator without owning MPI initialization/finalization.

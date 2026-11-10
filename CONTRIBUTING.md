@@ -14,8 +14,8 @@ This file only records what is specific to `hataori-rs`:
   runs `cargo +1.85.0 check` in every feature configuration, so the claim is gated. The `tenferro` feature needs Rust
   1.96 and is outside that matrix by design.
 - **Feature combinations CI builds**: `--no-default-features` with each of `""`, `rayon`, `mpi`, `mpi,rayon`,
-  `rsmpi-rt`, `rsmpi-rt,rayon`, each running `cargo test`, `cargo clippy --all-targets -D warnings`, `cargo doc
-  --no-deps` and the 1.85.0 check, plus `cargo fmt --check` once.
+  `mpi,bitcode`, `rsmpi-rt`, `rsmpi-rt,rayon`, each running `cargo test`, `cargo clippy --all-targets -D warnings`,
+  `cargo doc --no-deps` and the 1.85.0 check, plus `cargo fmt --check` once.
 - **Platforms claimed**: `ubuntu-latest` for all three jobs (`core`, `deps-fresh`, `tenferro-adapter`);
   `x86_64-apple-darwin` is installed as a check target only, not run. MPI comes from the system Open MPI
   (`libopenmpi-dev`, `openmpi-bin`) and the runtime-loaded backend from the pinned MPIwrapper fixture.
@@ -44,6 +44,6 @@ so the root crate's public documentation is not gated warning-free; the `check-p
 `hataori-runtime` and `hataori-algorithms`, and `check-tenferro.sh` does so for the adapter.
 
 The workflow's other steps cover `fmt`, `clippy`, `test` and `msrv`. `check-core.sh` passes `--locked` to the initial
-`cargo metadata` read and to the six-row matrix (`cargo test`, `cargo clippy`, `cargo doc`, `cargo +1.85.0 check`);
+`cargo metadata` read and to the seven-row matrix (`cargo test`, `cargo clippy`, `cargo doc`, `cargo +1.85.0 check`);
 the two `cargo tree` probes, the mutually exclusive feature probe, the Darwin target check, and the helper scripts it
 calls do not pass `--locked`.

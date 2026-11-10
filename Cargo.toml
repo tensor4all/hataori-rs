@@ -15,6 +15,7 @@ default = []
 rayon = ["dep:rayon", "dep:libc"]
 mpi = ["dep:mpi-upstream", "dep:serde", "dep:bincode"]
 rsmpi-rt = ["dep:mpi-runtime", "dep:serde", "dep:bincode"]
+bitcode = ["dep:bitcode"]
 tenferro = ["dep:tenferro-tensor"]
 runtime = ["dep:hataori-runtime", "dep:hataori-algorithms"]
 
@@ -24,6 +25,7 @@ mpi-upstream = { package = "mpi", version = "=0.8.1", default-features = false, 
 mpi-runtime = { package = "mpi", git = "https://github.com/tensor4all/rsmpi-rt", rev = "6db6a2d6f96115b17c9a925e53ce719797c15dbb", default-features = false, features = ["mpi-rt-sys-backend"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 bincode = { version = "2", default-features = false, features = ["serde", "std"], optional = true }
+bitcode = { version = "0.6", default-features = false, features = ["serde", "std"], optional = true }
 tenferro-tensor = { git = "https://github.com/tensor4all/tenferro-rs", rev = "32a4e98c12f9dc36ffa85b5273b9247b44936959", optional = true }
 hataori-runtime = { path = "crates/hataori-runtime", optional = true }
 hataori-algorithms = { path = "crates/hataori-algorithms", optional = true }
