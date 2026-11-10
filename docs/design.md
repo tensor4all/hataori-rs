@@ -388,13 +388,96 @@ bincode::config::standard()
 
 The `bitcode` feature adds a second backend for evaluation; it is not part of the default build, and the MPI path still selects the default codec. A codec is chosen at compile time because both ends of an exchange must agree on it.
 
-Each message uses a fixed header tag followed, when nonempty, by one payload tag from the same source on the private communicator. The fixed-width header contains protocol version, message kind, batch ID, item count, status, and `u64` payload length. Status is a checked scheduler tag; the wire codec treats payload bytes as opaque, while each scheduler/transport message kind defines its payload schema in the task that consumes it. Capacity one means a rank never has two payloads outstanding. Receivers first match the header, then receive exactly its announced payload from that source; no wildcard payload receive is allowed.
+Each message uses a fixed header tag followed, for the payload-bearing kinds (`Task`, `Result`, and the placement kinds), by one payload message from the same source on the private communicator; those send the payload message even when the encoded payload is empty, while the scheduler's header-only kinds (`Ready`, `Stop`, `Drain`) send no payload message at all. The fixed-width header contains protocol version, message kind, batch ID, item count, status, and `u64` payload length. Status is a checked scheduler tag; the wire codec treats payload bytes as opaque, while each scheduler/transport message kind defines its payload schema in the task that consumes it. Capacity one means a rank never has two payloads outstanding. Receivers first match the header, then receive exactly its announced payload from that source; no wildcard payload receive is allowed.
 
 `MAX_WIRE_BYTES` is `i32::MAX` for P0, matching rsmpi's MPI `Count`. Length is checked against that limit and local `usize` before allocation or send. Decoding validates the received MPI count, every integer conversion, protocol version, message/state compatibility, expected structure, and full byte consumption. Truncation, overflow, unexpected kind/tag/source, and trailing bytes are protocol errors.
 
 Same-rank movement is an owned move and bypasses serialization and MPI. Distributed `pmap` retains serde bounds because placement is decided at runtime; callers needing non-serializable local work use `map`.
 
 Core transports only opaque serializable `T` and `U` values or bytes. Tensor shape, dtype, layout, allocation, and target-context reconstruction belong to the optional tensor adapter. Closures, communicators, pools, contexts, admission state, cache identity, and addresses never appear on the wire.
+
+### 10.1 Direct data plane for contiguous numeric buffers (issue #16, slice A)
+
+The framed path above is the control plane: it stays the only path for every
+structured payload and its bytes are unchanged. A contiguous, one-dimensional
+`f32`/`f64` buffer can instead use the direct data-plane frame kind
+`MessageKind::Direct` (code 8), which skips serde and the intermediate
+`Vec<u8>`:
+
+| part | tag | length | content |
+| --- | --- | --- | --- |
+| control | 2 | 30 bytes | the 28-byte header (`kind = Direct`, `status = None`, `batch_id = 0`, `item_count = N` elements, `payload_len = N * size_of::<T>()`), then byte 28 = element type (1 = `f32`, 2 = `f64`) and byte 29 = sender byte order (1 = little, 2 = big) |
+| data | 3 | `payload_len` | raw host-order elements as one typed MPI message of `N` `f32`/`f64` values; omitted entirely when `N = 0` |
+
+The descriptor travels in the control message, not in the data message: the data
+message is exactly the caller's buffer. The element type comes from the
+descriptor, which both ends agree on, and the receiver's probe reports the
+pending count expressed in that type; MPI does not verify the peer's type
+signature on its own. `Header::decode_control` enforces that the kind and the
+control length agree, so a framed kind is always exactly the unchanged 28-byte
+header and a `Direct` frame can never omit its two descriptor bytes.
+
+Byte order is an admission condition, not a conversion: the data plane sends
+typed MPI elements and Hataori performs no byte conversion, so both ends must
+share one byte order. The marker records the sender's host order, and a receiver
+rejects a mismatch (`WireError::DirectByteOrderMismatch`) before allocating;
+heterogeneous-endian peers must use the codec path, which is explicitly
+little-endian. A zero-element buffer sends only the 30-byte control message and
+the receiver returns an empty `Vec` without posting a data receive, so the empty
+case allocates no element buffer and leaves no unmatched message; the control
+message is received into a stack buffer, and only a rejected-frame drain may
+allocate an element buffer (on the error path). Receiving validates kind,
+element type, byte order, and `item_count * size_of::<T>() == payload_len` with
+checked arithmetic before it allocates the element buffer, then checks the
+`MPI_Get_count` result against `item_count` so a short data message cannot leave
+zero-filled values behind; both the control message and the data message are
+probed first, so a size or count is validated before anything is allocated, and an
+oversized data message is reported as `DirectCountMismatch` instead of aborting
+the job with an MPI truncation error. If a control message is rejected after its
+data message was already sent, the receiver receives and discards that message
+before returning the error, so a blocking sender completes and the next frame is
+not poisoned. Draining covers exactly the frames that are still readable: a
+length-consistent `Direct` frame with a readable element-type byte. Anything else
+— a header that does not decode, a framed kind, or an invalid element-type byte —
+means the two ends disagree about the wire format, so the message boundary is
+unknowable and the rejection is reported as `DirectDrainFailed` instead of the
+original (recoverable) error; a drain whose probed count disagrees with
+`item_count` reports `DirectCountMismatch`. In both cases the exchange is fatal
+and the caller must not reuse the communicator. Like the framed path, direct
+receive uses blocking MPI `probe`/`receive` with no deadline: a missing payload or
+a failed peer blocks the call.
+
+In slice A the transport is crate-private (`src/direct.rs`: `send`, `receive`,
+trait `DirectElem` for `f32`/`f64`) and has no caller outside the test suite; the
+issue's item 3 adapters and the `pmap`/placement call sites are later slices. A
+caller will therefore have to hand in one contiguous buffer of a supported
+element type plus the destination rank, must agree on the element type and byte
+order on both ends, and must own the communicator: direct frames use the same
+control/data tag pair (2/3) as placement frames, so one communicator carries one
+exchange pattern. No shape, stride, or dtype beyond those two element types is
+carried.
+
+Hataori-side cost per send (`cargo test --release --no-default-features
+--features mpi --lib direct::tests::direct_payload_measurement -- --exact
+--ignored --nocapture --test-threads=1`; counting allocator around the encode
+window only, so MPI's own allocations and the input buffer are excluded;
+"retained" is the encoder's final allocation footprint, i.e. initial allocation
+sizes plus reallocation growth):
+
+| elements (f64) | path | control bytes | data bytes | encode allocations | encode bytes retained |
+| --- | --- | --- | --- | --- | --- |
+| 1e3 | bincode | 28 | 8 008 | 11 | 8 192 |
+| 1e3 | direct | 30 | 8 000 | 0 | 0 |
+| 1e5 | bincode | 28 | 800 008 | 18 | 1 048 576 |
+| 1e5 | direct | 30 | 800 000 | 0 | 0 |
+| 1e7 | bincode | 28 | 80 000 008 | 25 | 134 217 728 |
+| 1e7 | direct | 30 | 80 000 000 | 0 | 0 |
+
+The direct path's two extra control bytes are the descriptor; what it removes is
+the encoded copy (bincode's 8-byte length prefix plus geometric `Vec` growth) and
+every allocation around it. MPI-internal allocations are not instrumented, and no
+throughput numbers are claimed, because loopback MPI timing on a shared host is
+not a measurement.
 
 ## 11. Data placement helpers
 

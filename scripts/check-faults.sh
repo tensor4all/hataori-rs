@@ -65,7 +65,7 @@ run_exact() {
     if [[ $backend == rsmpi-rt ]]; then
         environment+=(MPI_RT_LIB=$mpi_rt_lib)
     fi
-    if ! setsid timeout --signal=TERM --kill-after=5s 120s \
+    if ! setsid timeout --signal=TERM --kill-after=2s 60s \
         "${environment[@]}" "$launcher" "${launcher_flags[@]}" -n "$count" \
         "$binary" --exact "$test_name" --nocapture --test-threads=1 >"$output" 2>&1; then
         cat "$output" >&2
@@ -82,6 +82,10 @@ for backend in mpi rsmpi-rt; do
         HATAORI_FAULT_MARKER="$marker"
     run_exact "$backend" 1 pmap::mpi_fault_tests::size_one_root_paths_bypass_codec \
         HATAORI_CODEC_TEST=1
+    run_exact "$backend" 2 direct::tests::direct_payload_roundtrip \
+        HATAORI_DIRECT_PAYLOAD=1
+    run_exact "$backend" 3 direct::tests::direct_payload_roundtrip \
+        HATAORI_DIRECT_PAYLOAD=1
 done
 
-printf 'fault and codec-bypass checks passed for mpi and rsmpi-rt\n'
+printf 'fault, codec-bypass, and direct data-plane checks passed for mpi and rsmpi-rt\n'

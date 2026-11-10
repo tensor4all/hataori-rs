@@ -2,6 +2,12 @@
 
 #[cfg(any(feature = "mpi", feature = "rsmpi-rt"))]
 mod codec;
+#[cfg(any(feature = "mpi", feature = "rsmpi-rt"))]
+#[allow(
+    dead_code,
+    reason = "slice A transport primitive; #16 item 3 adapters and the pmap callers land later"
+)]
+mod direct;
 mod domain;
 mod lanes;
 #[cfg(feature = "rayon")]
