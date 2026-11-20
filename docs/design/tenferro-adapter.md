@@ -21,7 +21,7 @@ tensor reconstruction stay outside this change.
 - local `hataori` with `rayon` enabled (for the `Lanes` contract and
   `pmap_lanes`);
 - `tenferro-cpu` (default features off, **no provider feature**) at exactly
-  `062298519`. tenferro-cpu's CPU providers (`native`, `blas`,
+  `71b50235b`. tenferro-cpu's CPU providers (`native`, `blas`,
   `provider-inject`, ...) are mutually exclusive, so the consumer selects one
   through its own tenferro-cpu dependency and Cargo feature unification; the
   adapter's tests, doctests and examples enable `native` through a
