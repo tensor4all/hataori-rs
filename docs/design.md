@@ -48,8 +48,8 @@ contain no tenferro or tensor4all crate (enforced by `scripts/check-core.sh`
 and `scripts/check-tenferro.sh`), and the opt-in `tenferro` example feature is
 built and run by `scripts/check-tutorial-examples.sh`, which builds and runs
 the Mandelbrot examples with the `tenferro` feature. The tenferro-only
-`hataori-tenferro` adapter is pinned to tenferro v0.10.0
-(`32a4e98c12f9dc36ffa85b5273b9247b44936959`) and binds Hataori lanes to
+`hataori-tenferro` adapter is pinned to tenferro v0.13.0
+(`5df83672071fd50136d00b821606d5674e8c5f2c`) and binds Hataori lanes to
 caller-held tenferro engines ([adapter design](design/tenferro-adapter.md));
 Phase 20b adds tensor4all contexts and reconstruction after tensor4all-rs#663.
 

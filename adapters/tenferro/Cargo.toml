@@ -12,15 +12,12 @@ mpi = ["hataori/mpi", "dep:mpi-upstream"]
 [dependencies]
 hataori = { path = "../..", features = ["rayon"] }
 mpi-upstream = { package = "mpi", version = "=0.8.1", default-features = false, optional = true }
-# Provider-neutral: the consumer selects tenferro-cpu's CPU provider (`native`,
-# `blas`, `provider-inject`, ...) through its own dependency on tenferro-cpu;
-# the providers are mutually exclusive, so the adapter must not pick one.
-tenferro-cpu = { git = "https://github.com/tensor4all/tenferro-rs", rev = "32a4e98c12f9dc36ffa85b5273b9247b44936959", default-features = false }
+# tenferro-cpu has one CPU provider since tenferro-rs#2609 dropped the vendor
+# BLAS/LAPACK providers, so there is no provider feature to select or forward.
+tenferro-cpu = { git = "https://github.com/tensor4all/tenferro-rs", rev = "5df83672071fd50136d00b821606d5674e8c5f2c", default-features = false }
 
 [dev-dependencies]
-# The adapter's own tests, doctests and examples run on the native provider.
-tenferro-cpu = { git = "https://github.com/tensor4all/tenferro-rs", rev = "32a4e98c12f9dc36ffa85b5273b9247b44936959", default-features = false, features = ["native"] }
-tenferro-tensor = { git = "https://github.com/tensor4all/tenferro-rs", rev = "32a4e98c12f9dc36ffa85b5273b9247b44936959" }
+tenferro-tensor = { git = "https://github.com/tensor4all/tenferro-rs", rev = "5df83672071fd50136d00b821606d5674e8c5f2c" }
 
 [[example]]
 name = "pmap_lanes_smoke"

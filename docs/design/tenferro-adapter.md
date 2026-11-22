@@ -20,12 +20,10 @@ tensor reconstruction stay outside this change.
 
 - local `hataori` with `rayon` enabled (for the `Lanes` contract and
   `pmap_lanes`);
-- `tenferro-cpu` (default features off, **no provider feature**) at exactly
-  `062298519`. tenferro-cpu's CPU providers (`native`, `blas`,
-  `provider-inject`, ...) are mutually exclusive, so the consumer selects one
-  through its own tenferro-cpu dependency and Cargo feature unification; the
-  adapter's tests, doctests and examples enable `native` through a
-  dev-dependency only;
+- `tenferro-cpu` (default features off) at exactly `5df83672`. Since
+  tenferro-rs#2609 dropped the vendor BLAS/LAPACK providers, tenferro-cpu has a
+  single CPU provider and no provider feature, so the adapter neither selects
+  nor forwards one;
 - `tenferro-tensor` as a **dev-dependency only**: the adapter itself names no
   tensor type, and only its tests and example build real tensors;
 - an optional `mpi` feature (`hataori/mpi` plus upstream `mpi`) used only by the
@@ -189,8 +187,8 @@ declared CPU set, and placement belongs to the caller.
 - core default and `rayon` trees still contain no tenferro or tensor4all crate;
 - the adapter tree carries exactly the pinned tenferro revision and no
   tensor4all package, and both pinned tenferro crates are checked through
-  `cargo metadata` (`tenferro-tensor` is a dev-dependency now, so it is not in
-  the normal tree);
+  `cargo metadata` (`tenferro-tensor` arrives through `tenferro-cpu` and as the
+  adapter's own dev-dependency);
 - `cargo test -p hataori-tenferro` proves, with two engines of different worker
   counts: known-value tenferro operations through `map_in_lanes(TenferroLanes)`
   (every item once, input order preserved), lane `i` lent engine `i` on a
