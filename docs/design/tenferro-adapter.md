@@ -187,8 +187,8 @@ declared CPU set, and placement belongs to the caller.
 - core default and `rayon` trees still contain no tenferro or tensor4all crate;
 - the adapter tree carries exactly the pinned tenferro revision and no
   tensor4all package, and both pinned tenferro crates are checked through
-  `cargo metadata` (`tenferro-tensor` is a dev-dependency now, so it is not in
-  the normal tree);
+  `cargo metadata` (`tenferro-tensor` arrives through `tenferro-cpu` and as the
+  adapter's own dev-dependency);
 - `cargo test -p hataori-tenferro` proves, with two engines of different worker
   counts: known-value tenferro operations through `map_in_lanes(TenferroLanes)`
   (every item once, input order preserved), lane `i` lent engine `i` on a
