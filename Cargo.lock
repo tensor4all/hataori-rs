@@ -164,6 +164,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "colmat"
+version = "0.34.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "377a0236b482724d72c85121804a30499ac73a38ae3d6b7a5e0e54a0e90264fc"
+dependencies = [
+ "bytemuck",
+ "colmat-traits",
+ "dyn-stack",
+ "equator 0.6.0",
+ "generativity",
+ "libm",
+ "nano-gemm",
+ "num-complex",
+ "num-traits",
+ "pulp",
+ "rayon",
+ "reborrow",
+ "t4a-gemm",
+ "t4a-private-gemm-x86",
+ "threadteam",
+]
+
+[[package]]
+name = "colmat-traits"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8bbf08552b8f5b652984a82f5e67a4560528fdbe70db32f19fc3f6cb7b49414c"
+dependencies = [
+ "bytemuck",
+ "dyn-stack",
+ "generativity",
+ "libm",
+ "num-complex",
+ "num-traits",
+ "pulp",
+ "qd",
+ "reborrow",
+]
+
+[[package]]
 name = "computegraph"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -180,9 +220,9 @@ dependencies = [
 
 [[package]]
 name = "cpueinsum"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36136c6e92297d7d63bcb0ca3186aebc5393d14a83afce14fc40fa23a3392614"
+checksum = "a7a49bd4fd32207f2da1a85e0b0eb7a26ddf087ae14d17b302d6a7e603af1627"
 dependencies = [
  "num-complex",
  "strided-view",
@@ -1109,9 +1149,9 @@ dependencies = [
 
 [[package]]
 name = "strided-basic"
-version = "0.12.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d5b6ae7845353d0370ae76c9d101968e79414f175b1fd452bc75128daf7983c"
+checksum = "6ee5b76096b37b0cd304e6d3396a1959c58b1c17598fd1e72e62a453bb2ee312"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1124,9 +1164,9 @@ dependencies = [
 
 [[package]]
 name = "strided-fused"
-version = "0.12.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "042f5efe2510c3c18a93b97e9372749452d8a703a22ab44d1aa73acc4b55922b"
+checksum = "bc81c0c5753d8df3184aa43960062d09fbdf6cedbfe21fcb29655d518fe97944"
 dependencies = [
  "elem-simd-math",
  "num-complex",
@@ -1136,9 +1176,9 @@ dependencies = [
 
 [[package]]
 name = "strided-kernel"
-version = "0.12.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1fb6f959e002e214fd0ed61f62b1872bfb6758bd5186edd96e03fe88c831836"
+checksum = "f10b0c7fe798e29cc666b45fb337c28b2f72a800c04c801eda442953385f5a34"
 dependencies = [
  "num-complex",
  "strided-basic",
@@ -1147,9 +1187,9 @@ dependencies = [
 
 [[package]]
 name = "strided-nn"
-version = "0.12.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2b8f9bde906f242eda8a2a71b58127959ec2474c9dedba03891784b69cd5bc8"
+checksum = "7c5e325f11a4991c488772173771b7f070908e13288dfed90c983d74df5dc9ce"
 dependencies = [
  "elem-simd-math",
  "pulp",
@@ -1159,9 +1199,9 @@ dependencies = [
 
 [[package]]
 name = "strided-perm"
-version = "0.12.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9201632f2fbb80f41b3ef3acd80d0d1b8468f071040088ba851d7edcc0ccc4ea"
+checksum = "aec11d5cb220ad867434863a6fae429d3c3522727f662445cfa3e0f8b5f82a33"
 dependencies = [
  "strided-view",
  "thiserror 1.0.69",
@@ -1181,9 +1221,9 @@ dependencies = [
 
 [[package]]
 name = "strided-view"
-version = "0.7.2"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ad8f5108af944e653d560d815611e77d3a5bea44f22f53c934ec226a69c8d7e"
+checksum = "4aed43695230aa8277516be44e94089a5ce711fd5444ec4df148e00ea3202da9"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1240,44 +1280,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "t4a-faer"
-version = "0.33.0"
+name = "t4a-cost"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fbb418322be3bde5413613ec9dfcaa8c7e764ac8e17fd513ceba6942e9bfcbc7"
-dependencies = [
- "bytemuck",
- "dyn-stack",
- "equator 0.6.0",
- "generativity",
- "libm",
- "nano-gemm",
- "num-complex",
- "num-traits",
- "pulp",
- "rayon",
- "reborrow",
- "t4a-faer-traits",
- "t4a-gemm",
- "t4a-private-gemm-x86",
- "threadteam",
-]
-
-[[package]]
-name = "t4a-faer-traits"
-version = "0.24.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d0ac00f8eac55b87f2609e232ed97179783cd57a14ce3a007e6c45b2bda0b84"
-dependencies = [
- "bytemuck",
- "dyn-stack",
- "generativity",
- "libm",
- "num-complex",
- "num-traits",
- "pulp",
- "qd",
- "reborrow",
-]
+checksum = "23ab959ae1e239250950f298b1b3634f799f37d64ea9956111b7d78e3d5146f0"
 
 [[package]]
 name = "t4a-gemm"
@@ -1416,15 +1422,16 @@ dependencies = [
 
 [[package]]
 name = "tcontract"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd98479083b7f58b4df9cb13d829e4f50fb93e67364de2cc5169a191332a63d1"
+checksum = "6d6fd3e201d39a4a8ff2b8abec8e919435ba5417e55639e19634f20f03f5b8a9"
 dependencies = [
+ "colmat",
  "num-complex",
  "num-traits",
  "strided-basic",
  "strided-view",
- "t4a-faer",
+ "t4a-cost",
  "tcontract-exec",
  "tcontract-kernel",
  "thiserror 1.0.69",
@@ -1434,11 +1441,12 @@ dependencies = [
 
 [[package]]
 name = "tcontract-exec"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13dfb5292bdf73d40f1fe5c65d3d921cedcb922347bfaa09f34217b8598403c9"
+checksum = "05706e60e4e26b055438bd69fd200974339339230512111b810e04e7eed8a50d"
 dependencies = [
- "t4a-faer",
+ "colmat",
+ "t4a-cost",
  "thiserror 1.0.69",
  "threadteam",
 ]
@@ -1454,14 +1462,15 @@ dependencies = [
 
 [[package]]
 name = "tenferro-core-ops"
-version = "0.10.0"
-source = "git+https://github.com/tensor4all/tenferro-rs?rev=71b50235b21d9aeb79f971339d088b6213fa41f4#71b50235b21d9aeb79f971339d088b6213fa41f4"
+version = "0.13.0"
+source = "git+https://github.com/tensor4all/tenferro-rs?rev=219170b2962cde9c9f58318f06e97766a2a4c578#219170b2962cde9c9f58318f06e97766a2a4c578"
 
 [[package]]
 name = "tenferro-cpu"
-version = "0.10.0"
-source = "git+https://github.com/tensor4all/tenferro-rs?rev=71b50235b21d9aeb79f971339d088b6213fa41f4#71b50235b21d9aeb79f971339d088b6213fa41f4"
+version = "0.13.0"
+source = "git+https://github.com/tensor4all/tenferro-rs?rev=219170b2962cde9c9f58318f06e97766a2a4c578#219170b2962cde9c9f58318f06e97766a2a4c578"
 dependencies = [
+ "colmat",
  "cpueinsum",
  "elem-simd-math",
  "libm",
@@ -1471,7 +1480,6 @@ dependencies = [
  "strided-basic",
  "strided-kernel",
  "strided-nn",
- "t4a-faer",
  "tenferro-core-ops",
  "tenferro-cpu-basic",
  "tenferro-cpu-fused",
@@ -1485,8 +1493,8 @@ dependencies = [
 
 [[package]]
 name = "tenferro-cpu-basic"
-version = "0.10.0"
-source = "git+https://github.com/tensor4all/tenferro-rs?rev=71b50235b21d9aeb79f971339d088b6213fa41f4#71b50235b21d9aeb79f971339d088b6213fa41f4"
+version = "0.13.0"
+source = "git+https://github.com/tensor4all/tenferro-rs?rev=219170b2962cde9c9f58318f06e97766a2a4c578#219170b2962cde9c9f58318f06e97766a2a4c578"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1497,8 +1505,8 @@ dependencies = [
 
 [[package]]
 name = "tenferro-cpu-fused"
-version = "0.10.0"
-source = "git+https://github.com/tensor4all/tenferro-rs?rev=71b50235b21d9aeb79f971339d088b6213fa41f4#71b50235b21d9aeb79f971339d088b6213fa41f4"
+version = "0.13.0"
+source = "git+https://github.com/tensor4all/tenferro-rs?rev=219170b2962cde9c9f58318f06e97766a2a4c578#219170b2962cde9c9f58318f06e97766a2a4c578"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1511,8 +1519,8 @@ dependencies = [
 
 [[package]]
 name = "tenferro-internal-cpu-kernels"
-version = "0.10.0"
-source = "git+https://github.com/tensor4all/tenferro-rs?rev=71b50235b21d9aeb79f971339d088b6213fa41f4#71b50235b21d9aeb79f971339d088b6213fa41f4"
+version = "0.13.0"
+source = "git+https://github.com/tensor4all/tenferro-rs?rev=219170b2962cde9c9f58318f06e97766a2a4c578#219170b2962cde9c9f58318f06e97766a2a4c578"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1526,8 +1534,8 @@ dependencies = [
 
 [[package]]
 name = "tenferro-internal-extension-macros"
-version = "0.10.0"
-source = "git+https://github.com/tensor4all/tenferro-rs?rev=71b50235b21d9aeb79f971339d088b6213fa41f4#71b50235b21d9aeb79f971339d088b6213fa41f4"
+version = "0.13.0"
+source = "git+https://github.com/tensor4all/tenferro-rs?rev=219170b2962cde9c9f58318f06e97766a2a4c578#219170b2962cde9c9f58318f06e97766a2a4c578"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1536,8 +1544,8 @@ dependencies = [
 
 [[package]]
 name = "tenferro-internal-ops"
-version = "0.10.0"
-source = "git+https://github.com/tensor4all/tenferro-rs?rev=71b50235b21d9aeb79f971339d088b6213fa41f4#71b50235b21d9aeb79f971339d088b6213fa41f4"
+version = "0.13.0"
+source = "git+https://github.com/tensor4all/tenferro-rs?rev=219170b2962cde9c9f58318f06e97766a2a4c578#219170b2962cde9c9f58318f06e97766a2a4c578"
 dependencies = [
  "computegraph",
  "num-complex",
@@ -1549,8 +1557,8 @@ dependencies = [
 
 [[package]]
 name = "tenferro-runtime"
-version = "0.10.0"
-source = "git+https://github.com/tensor4all/tenferro-rs?rev=71b50235b21d9aeb79f971339d088b6213fa41f4#71b50235b21d9aeb79f971339d088b6213fa41f4"
+version = "0.13.0"
+source = "git+https://github.com/tensor4all/tenferro-rs?rev=219170b2962cde9c9f58318f06e97766a2a4c578#219170b2962cde9c9f58318f06e97766a2a4c578"
 dependencies = [
  "computegraph",
  "lru",
@@ -1566,8 +1574,8 @@ dependencies = [
 
 [[package]]
 name = "tenferro-tensor"
-version = "0.10.0"
-source = "git+https://github.com/tensor4all/tenferro-rs?rev=71b50235b21d9aeb79f971339d088b6213fa41f4#71b50235b21d9aeb79f971339d088b6213fa41f4"
+version = "0.13.0"
+source = "git+https://github.com/tensor4all/tenferro-rs?rev=219170b2962cde9c9f58318f06e97766a2a4c578#219170b2962cde9c9f58318f06e97766a2a4c578"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1579,8 +1587,8 @@ dependencies = [
 
 [[package]]
 name = "tenferro-tensor-core"
-version = "0.10.0"
-source = "git+https://github.com/tensor4all/tenferro-rs?rev=71b50235b21d9aeb79f971339d088b6213fa41f4#71b50235b21d9aeb79f971339d088b6213fa41f4"
+version = "0.13.0"
+source = "git+https://github.com/tensor4all/tenferro-rs?rev=219170b2962cde9c9f58318f06e97766a2a4c578#219170b2962cde9c9f58318f06e97766a2a4c578"
 dependencies = [
  "num-complex",
  "strided-view",
@@ -1639,9 +1647,9 @@ dependencies = [
 
 [[package]]
 name = "threadteam"
-version = "0.5.1"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ae7666b2f6a9ad479f5d0be7b54d21d62912ddd7c69923ad6f50767a86440e8"
+checksum = "1569aa460678c61333c4dd8635cfd587e157f3ed461dd491b4223c8da5821a2d"
 dependencies = [
  "libc",
  "loom",
