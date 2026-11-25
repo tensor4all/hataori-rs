@@ -20,8 +20,8 @@ tensor reconstruction stay outside this change.
 
 - local `hataori` with `rayon` enabled (for the `Lanes` contract and
   `pmap_lanes`);
-- `tenferro-cpu` (default features off) at exactly `219170b2`, the head of
-  tenferro-rs#2678 (tenferro `main` plus its compiler metadata repair). Since
+- `tenferro-cpu` (default features off) at exactly `2bd44458`, the tenferro-rs
+  `main` commit that merged the compiler metadata repair of tenferro-rs#2678. Since
   tenferro-rs#2609 dropped the vendor BLAS/LAPACK providers, tenferro-cpu has a
   single CPU provider and no provider feature, so the adapter neither selects
   nor forwards one;

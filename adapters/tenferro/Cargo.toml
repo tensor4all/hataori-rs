@@ -14,10 +14,10 @@ hataori = { path = "../..", features = ["rayon"] }
 mpi-upstream = { package = "mpi", version = "=0.8.1", default-features = false, optional = true }
 # tenferro-cpu has one CPU provider since tenferro-rs#2609 dropped the vendor
 # BLAS/LAPACK providers, so there is no provider feature to select or forward.
-tenferro-cpu = { git = "https://github.com/tensor4all/tenferro-rs", rev = "219170b2962cde9c9f58318f06e97766a2a4c578", default-features = false }
+tenferro-cpu = { git = "https://github.com/tensor4all/tenferro-rs", rev = "2bd44458b819afe7eab2d71bbb97166c59fd4e1a", default-features = false }
 
 [dev-dependencies]
-tenferro-tensor = { git = "https://github.com/tensor4all/tenferro-rs", rev = "219170b2962cde9c9f58318f06e97766a2a4c578" }
+tenferro-tensor = { git = "https://github.com/tensor4all/tenferro-rs", rev = "2bd44458b819afe7eab2d71bbb97166c59fd4e1a" }
 
 [[example]]
 name = "pmap_lanes_smoke"

@@ -26,7 +26,7 @@ mpi-runtime = { package = "mpi", git = "https://github.com/tensor4all/rsmpi-rt",
 serde = { version = "1", features = ["derive"], optional = true }
 bincode = { version = "2", default-features = false, features = ["serde", "std"], optional = true }
 bitcode = { version = "0.6", default-features = false, features = ["serde", "std"], optional = true }
-tenferro-tensor = { git = "https://github.com/tensor4all/tenferro-rs", rev = "219170b2962cde9c9f58318f06e97766a2a4c578", optional = true }
+tenferro-tensor = { git = "https://github.com/tensor4all/tenferro-rs", rev = "2bd44458b819afe7eab2d71bbb97166c59fd4e1a", optional = true }
 hataori-runtime = { path = "crates/hataori-runtime", optional = true }
 hataori-algorithms = { path = "crates/hataori-algorithms", optional = true }
 
