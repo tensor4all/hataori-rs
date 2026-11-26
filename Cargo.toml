@@ -109,7 +109,8 @@ debug = 0
 # `crates/hataori-runtime-foundation/src/protocol.rs`), length and offset arithmetic on received
 # frames should panic on overflow in a test instead of wrapping, and the standard library's
 # unsafe-precondition checks only run with `debug-assertions`. `dev`/`test` above already set
-# `debug = 0`, so this changes no code generation; it fixes the name every workflow uses.
+# `debug = 0`, so optimisation, assertions and debug info are as before; what changes is
+# `incremental = false` and `strip = "symbols"`, and the name every workflow uses.
 [profile.ci]
 inherits = "test"
 incremental = false
