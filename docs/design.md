@@ -49,8 +49,9 @@ and `scripts/check-tenferro.sh`), and the opt-in `tenferro` example feature is
 built and run by `scripts/check-tutorial-examples.sh`, which builds and runs
 the Mandelbrot examples with the `tenferro` feature. The tenferro-only
 `hataori-tenferro` adapter is pinned to tenferro v0.13.0
-(`5df83672071fd50136d00b821606d5674e8c5f2c`) and binds Hataori lanes to
-caller-held tenferro engines ([adapter design](design/tenferro-adapter.md));
+(`2bd44458b819afe7eab2d71bbb97166c59fd4e1a`, the tenferro-rs `main`
+commit that merged the compiler metadata repair of tenferro-rs#2678) and
+binds Hataori lanes to caller-held tenferro engines ([adapter design](design/tenferro-adapter.md));
 Phase 20b adds tensor4all contexts and reconstruction after tensor4all-rs#663.
 
 Hataori uses standard-library collections, synchronization, channels, and errors. P0 does not add an async runtime, general channel/locking crate, error-derive crate, logging facade, CLI framework, topology library, or generic transport/executor plugin system.
