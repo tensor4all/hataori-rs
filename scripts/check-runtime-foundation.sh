@@ -6,8 +6,8 @@ cd "$root_dir"
 export BINDGEN_EXTRA_CLANG_ARGS=${BINDGEN_EXTRA_CLANG_ARGS:-"-I$(gcc -print-file-name=include)"}
 
 cargo fmt --all -- --check
-cargo test -p hataori-runtime-foundation --no-default-features
-cargo test -p hataori-runtime-foundation --no-default-features --features mpi --lib
+cargo test --profile ci -p hataori-runtime-foundation --no-default-features
+cargo test --profile ci -p hataori-runtime-foundation --no-default-features --features mpi --lib
 cargo clippy -p hataori-runtime-foundation --all-targets --no-default-features -- -D warnings
 cargo clippy -p hataori-runtime-foundation --all-targets --no-default-features --features mpi -- -D warnings
 cargo doc -p hataori-runtime-foundation --no-deps --no-default-features
@@ -32,10 +32,10 @@ if rg -n 'unsafe impl (Send|Sync)' crates/hataori-runtime-foundation/src; then
     exit 1
 fi
 
-cargo build -p hataori-runtime-foundation --no-default-features --bin tcp_transport_smoke
-setsid timeout --signal=TERM --kill-after=2s 30s target/debug/tcp_transport_smoke
+cargo build --profile ci -p hataori-runtime-foundation --no-default-features --bin tcp_transport_smoke
+setsid timeout --signal=TERM --kill-after=2s 30s target/ci/tcp_transport_smoke
 
-cargo build -p hataori-runtime-foundation --no-default-features --features mpi \
+cargo build --profile ci -p hataori-runtime-foundation --no-default-features --features mpi \
     --bin mpi_transport_smoke
 source "$root_dir/scripts/mpi-launcher.sh"
 launcher=${MPIEXEC:-mpiexec}
@@ -52,7 +52,7 @@ for count in $rank_counts; do
     set +e
     env -u DISPLAY setsid timeout --signal=TERM --kill-after=2s 45s \
         "$launcher" "${launcher_flags[@]}" -n "$count" \
-        target/debug/mpi_transport_smoke >"$output" 2>&1
+        target/ci/mpi_transport_smoke >"$output" 2>&1
     status=$?
     set -e
     if ((status != 0)); then

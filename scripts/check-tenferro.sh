@@ -33,10 +33,10 @@ bounded() {
 
 bounded 30 cargo fmt --all -- --check
 
-bounded 30 cargo test -p hataori-tenferro --all-targets --no-run
-run 30 cargo test -p hataori-tenferro --all-targets
-bounded 30 cargo test -p hataori-tenferro --doc
-bounded 30 cargo test -p hataori --no-default-features --features rayon --doc
+bounded 30 cargo test --profile ci -p hataori-tenferro --all-targets --no-run
+run 30 cargo test --profile ci -p hataori-tenferro --all-targets
+bounded 30 cargo test --profile ci -p hataori-tenferro --doc
+bounded 30 cargo test --profile ci -p hataori --no-default-features --features rayon --doc
 bounded 30 cargo clippy -p hataori-tenferro --all-targets -- -D warnings
 bounded 30 env RUSTDOCFLAGS="-D warnings" cargo doc -p hataori-tenferro --no-deps
 
@@ -96,7 +96,7 @@ PY
 # against a pair.
 launcher=${MPIEXEC:-mpiexec}
 if command -v "$launcher" >/dev/null 2>&1 && command -v mpicc >/dev/null 2>&1; then
-    bounded 30 cargo build -p hataori-tenferro --features mpi --example pmap_lanes_smoke
+    bounded 30 cargo build --profile ci -p hataori-tenferro --features mpi --example pmap_lanes_smoke
     bounded 30 cargo clippy -p hataori-tenferro --features mpi --all-targets -- -D warnings
     mpi_flags=(--oversubscribe)
     if ((EUID == 0)); then
@@ -113,11 +113,11 @@ if command -v "$launcher" >/dev/null 2>&1 && command -v mpicc >/dev/null 2>&1; t
         mpi_flags+=(--bind-to none)
     fi
     run 60 env -u DISPLAY "$launcher" "${mpi_flags[@]}" -n 1 \
-        target/debug/examples/pmap_lanes_smoke --lanes 1
+        target/ci/examples/pmap_lanes_smoke --lanes 1
     # A lane is a thread the adapter starts, not a pool worker the launcher
     # pins, so two lanes need no second CPU and no unbinding launcher.
     run 60 env -u DISPLAY "$launcher" "${mpi_flags[@]}" -n 1 \
-        target/debug/examples/pmap_lanes_smoke --lanes 2
+        target/ci/examples/pmap_lanes_smoke --lanes 2
 else
     echo "check-tenferro: MPI toolchain unavailable; skipped the pmap_lanes world-size-1 smoke" >&2
 fi

@@ -66,7 +66,7 @@ export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=$(command -v gcc)
 cd "$root_dir"
 
 cargo check --no-default-features --features rsmpi-rt
-cargo build --no-default-features --features rsmpi-rt --example rsmpi_rt_pmap_smoke
+cargo build --profile ci --no-default-features --features rsmpi-rt --example rsmpi_rt_pmap_smoke
 
 tree=$(cargo tree --no-default-features --features rsmpi-rt)
 for package in mpi-sys bindgen build-probe-mpi; do
@@ -75,7 +75,7 @@ for package in mpi-sys bindgen build-probe-mpi; do
     fi
 done
 
-binary=$CARGO_TARGET_DIR/debug/examples/rsmpi_rt_pmap_smoke
+binary=$CARGO_TARGET_DIR/ci/examples/rsmpi_rt_pmap_smoke
 [[ -x $binary ]] || die "runtime smoke binary was not built: $binary"
 
 run_mpi() {

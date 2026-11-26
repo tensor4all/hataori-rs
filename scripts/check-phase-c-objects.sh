@@ -12,8 +12,8 @@ run_group() {
 }
 
 cargo fmt --check
-run_group 30 cargo test -p hataori-runtime --lib
-run_group 30 cargo test -p hataori-runtime --no-default-features --features mpi --lib
+run_group 30 cargo test --profile ci -p hataori-runtime --lib
+run_group 30 cargo test --profile ci -p hataori-runtime --no-default-features --features mpi --lib
 run_group 30 cargo clippy -p hataori-runtime --all-targets -- -D warnings
 run_group 30 cargo clippy -p hataori-runtime --all-targets --no-default-features --features mpi -- -D warnings
 run_group 30 env RUSTDOCFLAGS=-Dwarnings cargo doc -p hataori-runtime --no-deps
@@ -30,8 +30,8 @@ if grep -REn 'mpi::|SimpleCommunicator|TcpStream|SocketAddr' crates/hataori-runt
     exit 1
 fi
 
-run_group 20 cargo run -p hataori-runtime --bin tcp_runtime_smoke
-run_group 30 cargo build -p hataori-runtime --no-default-features --features mpi --bin mpi_runtime_smoke
+run_group 20 cargo run --profile ci -p hataori-runtime --bin tcp_runtime_smoke
+run_group 30 cargo build --profile ci -p hataori-runtime --no-default-features --features mpi --bin mpi_runtime_smoke
 mpi_flags=()
 source "$root_dir/scripts/mpi-launcher.sh"
 if mpi_launcher_supports_oversubscribe mpiexec; then
@@ -39,7 +39,7 @@ if mpi_launcher_supports_oversubscribe mpiexec; then
 fi
 rank_counts=$(mpi_rank_counts 4)
 for n in $rank_counts; do
-    run_group 15 mpiexec "${mpi_flags[@]}" -n "$n" target/debug/mpi_runtime_smoke
+    run_group 15 mpiexec "${mpi_flags[@]}" -n "$n" target/ci/mpi_runtime_smoke
 done
 
 git diff --check

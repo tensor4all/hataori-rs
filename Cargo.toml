@@ -101,3 +101,16 @@ debug = 0
 
 [profile.test]
 debug = 0
+
+# CI builds and tests with this profile (tensor4all-agent-rules, rules/common/repository.md,
+# "Build Profiles"); `scripts/check-*.sh` and `ci.yml` pass `--profile ci`. It inherits `test`, not
+# `release`: the wire and object framing state their length invariants as `debug_assert!`s
+# (`src/wire.rs`, `crates/hataori-runtime/src/{wire,object,domain}.rs`,
+# `crates/hataori-runtime-foundation/src/protocol.rs`), length and offset arithmetic on received
+# frames should panic on overflow in a test instead of wrapping, and the standard library's
+# unsafe-precondition checks only run with `debug-assertions`. `dev`/`test` above already set
+# `debug = 0`, so this changes no code generation; it fixes the name every workflow uses.
+[profile.ci]
+inherits = "test"
+incremental = false
+strip = "symbols"

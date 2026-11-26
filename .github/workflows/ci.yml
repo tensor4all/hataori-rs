@@ -76,10 +76,10 @@ jobs:
         run: cargo update
       - name: Test the freshly resolved dependency set
         run: |
-          cargo test --no-default-features
-          cargo test --no-default-features --features rayon
-          cargo test --no-default-features --features mpi
-          cargo test --no-default-features --features mpi,rayon
+          cargo test --profile ci --no-default-features
+          cargo test --profile ci --no-default-features --features rayon
+          cargo test --profile ci --no-default-features --features mpi
+          cargo test --profile ci --no-default-features --features mpi,rayon
 
       - name: Check the feature boundaries still fail to compile
         run: scripts/check-compile-boundaries.sh
