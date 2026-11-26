@@ -30,7 +30,7 @@ fi
 build_test_binary() {
     local backend=$1
     local json=$tmp_dir/$backend.json
-    cargo test --no-run --no-default-features --features "$backend" --message-format=json >"$json"
+    cargo test --profile ci --no-run --no-default-features --features "$backend" --message-format=json >"$json"
     python3 - "$json" <<'PY'
 import json
 import sys

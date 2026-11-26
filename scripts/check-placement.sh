@@ -17,10 +17,10 @@ trap 'rm -rf -- "$tmp_dir"' EXIT
 cd "$root_dir"
 
 export BINDGEN_EXTRA_CLANG_ARGS=${BINDGEN_EXTRA_CLANG_ARGS:-"-I$(gcc -print-file-name=include)"}
-cargo build --example mpi_placement_smoke --no-default-features --features mpi
-cp target/debug/examples/mpi_placement_smoke "$tmp_dir/upstream"
-cargo build --example rsmpi_rt_placement_smoke --no-default-features --features rsmpi-rt
-cp target/debug/examples/rsmpi_rt_placement_smoke "$tmp_dir/runtime"
+cargo build --profile ci --example mpi_placement_smoke --no-default-features --features mpi
+cp target/ci/examples/mpi_placement_smoke "$tmp_dir/upstream"
+cargo build --profile ci --example rsmpi_rt_placement_smoke --no-default-features --features rsmpi-rt
+cp target/ci/examples/rsmpi_rt_placement_smoke "$tmp_dir/runtime"
 
 source "$root_dir/scripts/mpi-launcher.sh"
 launcher=${MPIEXEC:-mpiexec}

@@ -35,7 +35,7 @@ for features in '' rayon mpi mpi,rayon mpi,bitcode rsmpi-rt rsmpi-rt,rayon; do
     else
         args=(--no-default-features --features "$features")
     fi
-    cargo test --locked "${args[@]}"
+    cargo test --profile ci --locked "${args[@]}"
     cargo clippy --all-targets --locked "${args[@]}" -- -D warnings
     cargo doc --no-deps --locked "${args[@]}"
     cargo +1.85.0 check --locked "${args[@]}"
